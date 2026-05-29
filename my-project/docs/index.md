@@ -52,8 +52,6 @@ If you have any questions or need assistance, please feel free to reach out: gra
 ---------------------------------------------------------
 
 
-You can install the package directly from PyPI using pip: **pip install bliss**.
-
 Or download the code from [here](https://github.com/xragua/bliss/releases/tag/0.2.9).
 
 Some examples of their usage are presented [here](https://github.com/xragua/bliss/tree/main/example).

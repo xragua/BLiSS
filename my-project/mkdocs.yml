@@ -20,10 +20,9 @@ nav:
     - EXAMPLE:
     
 
-        - Lines in an eclipse spectra: notebooks/example.ipynb
+        - Lines in an eclipse spectra: notebooks/modular_bliss_tutorial.ipynb
     
         
-
     - FUNCTIONS: functions.md
     
     - CONTRIBUTE: contribute.md
