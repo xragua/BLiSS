@@ -40,39 +40,39 @@ BLiSS addresses this need by providing a blind, continuum-independent candidate-
 
 Several mature tools already exist for astronomical spectral analysis. XSPEC [@1996ASPC..101...17A], SPEX [@kaastra1996uv], ISIS [@2013ascl.soft02002H], and Sherpa [@2001SPIE.4477...76F] provide powerful environments for instrument-aware fitting and physical plasma modelling. These packages are essential for final quantitative interpretation. However, they are primarily designed around explicit spectral models and user-specified fitting components, rather than blind candidate discovery.
 
-Python packages such as Specutils [@specutils] and LiMe [@lime] provide valuable tools for representing, fitting, and measuring spectral lines. Other software, such as PyEMILI [@2025ApJS..277...13T], focuses on automatic identification of spectral lines using atomic databases and ranking criteria. BLiSS fills a complementary niche. It is not intended to replace physical spectral modelling packages, nor to provide a final plasma-diagnostic solution. Instead, it provides a reproducible first-pass discovery layer: a way to find, rank, and describe candidate emission features before deciding which continuum, plasma, or instrumental model should be used for detailed interpretation.
+Python packages such as Specutils [@specutils] and LiMe [@lime] provide valuable tools for representing, fitting, and measuring spectral lines. Other software, such as PyEMILI [@2025ApJS..277...13T], focuses on automatic identification of spectral lines using atomic databases and ranking criteria. BLiSS fills a complementary niche. It is not intended to replace physical spectral modelling packages, nor to provide a final plasma-diagnostic solution. Instead, it provides a reproducible discovery layer: a way to find, rank, and describe candidate emission features before deciding which continuum or model should be used for detailed interpretation.
 
 This design is particularly useful in cases where the continuum is complex, uncertain, or locally structured. In many high-energy spectra, a global continuum fit can depend on model assumptions, absorption prescriptions, instrumental choices, or selected energy ranges. BLiSS therefore separates the exploratory detection stage from the final modelling stage. The output catalogue can later be used to guide XSPEC, ISIS, SPEX, Sherpa, or custom fitting workflows.
 
-# Functionality
 
-The BLiSS codebase is organized into independent modules for spectrum loading, preprocessing, empirical baseline estimation, candidate-region detection, Gaussian characterization, synthetic-spectrum generation, GMM evaluation, visualization, and optional atomic-line identification. This modular structure makes the package easier to maintain, test, and extend.
-
-BLiSS accepts plain-text spectra and FITS spectral products. Internally, spectra are represented as arrays of energy coordinates, spectral values, and uncertainties.
-
-The preprocessing layer includes fixed-width rebinning, signal-to-noise-based grouping, adaptive binning, uncertainty propagation, interpolation, and masking utilities. These operations are independent of the detection algorithm, allowing users to prepare spectra according to the requirements of their instrument, science case, or visual inspection needs.
-
-![Bliss output including optional atomic-line identification.](xte.png)
 
 # Methodology
 
 The first stage of the BLiSS workflow is empirical baseline estimation. BLiSS does not interpret this baseline as a physical continuum. Instead, it acts as a numerical approximation to the local spectral floor.
 
-Positive structures in the excess spectrum are interpreted as candidate emission-line regions or blocks. Within each candidate block, BLiSS identifies local maxima using peak-finding routines. For each peak, the package estimates quantities such as prominence, width, local height, and separation from neighboring peaks. Configurable filters can then be applied, including minimum prominence, minimum separation, width consistency, and maximum peak density.
+Positive structures in the excess spectrum are interpreted as candidate emission-line regions or blocks. Within each candidate block, BLiSS identifies local maxima using peak-finding routines. For each peak, the package estimates quantities such as prominence, width, local height, and separation from neighboring peaks. Configurable filters can then be applied, including minimum prominence, minimum separation, width consistency, and maximum peak density. This workflow allows to identifly multiple line components, close in emisison energy when the resolution is sufficient.
 
 Detected structures are characterized with Gaussian models. Multi-peak regions are represented as sums of Gaussian components. Initial parameter estimates are obtained automatically from the peak-detection stage, and fits are performed with nonlinear least-squares optimization. For each candidate, BLiSS reports centroid energy, width, amplitude, uncertainties, local noise estimates, signal-to-noise ratio, equivalent width, line area, and relative-excess metrics.
 
 A distinctive feature of BLiSS is the construction of synthetic comparison populations. Synthetic spectra are generated by reshuffling residual or excess structures while approximately preserving the statistical properties of the original spectrum. The same detection pipeline is then applied to the real and synthetic spectra. This produces two candidate populations: one extracted from the observed spectrum, and one representing noise-like or reshuffled structures.
 
-BLiSS combines real and synthetic candidates in a multidimensional feature space, using quantities such as Gaussian amplitude, width, signal-to-noise ratio, local contrast, and width-to-amplitude ratio. These features are standardized before Gaussian Mixture Models are fitted. The number of GMM components is selected using the Bayesian Information Criterion. For each cluster, BLiSS estimates its probability of being artifacts or real emission-line candidates based on the number of fake or real features that constitute each cluster.
+BLiSS combines real and synthetic candidates in a multidimensional feature space, using quantities such as Gaussian amplitude, width, signal-to-noise ratio, local contrast, and width-to-amplitude ratio. These features are standardized before Gaussian Mixture Models are fitted. The number of GMM components is selected using the Bayesian Information Criterion. For each cluster, BLiSS estimates the probability that its candidates are real emission-line candidates rather than artifacts, based on the relative number of real and synthetic features assigned to that cluster.
 
 This cluster-based score is not a formal Bayesian posterior probability. Rather, it is an empirical reliability score that quantifies how strongly a candidate resembles the real-detection population rather than the synthetic comparison population.
+
+![Bliss output including optional atomic-line identification.](xte.png)
+
+A integration with ISIS is also provided: it directly adds gaussian emission lines to a chosen continuum.
 
 # Atomic-line identification
 
 BLiSS includes optional routines for matching fitted centroids against XSTAR atomic transition tables. For each observed candidate energy the package searches for transitions satisfying a user-defined Doppler compatibility condition.
 
 Compatible transitions can then be ranked using atomic-prior scores based on quantities such as elemental abundance weights and Einstein coefficients from XSTAR-related atomic data [@Bautista_2001a]. This ranking is intended as a heuristic guide, not as a physical prediction of line flux. The identification stage remains independent from the blind-search stage, so users may perform candidate detection without adopting any specific atomic interpretation.
+
+# Applications
+
+This code, now structured and collected in a package had been succesfully used in published papers, and under review.
 
 # Acknowledgements
 
