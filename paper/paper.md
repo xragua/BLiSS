@@ -22,7 +22,7 @@ authors:
     affiliation: 2
 
 affiliations:
- - Huygens-Kamerlingh Onnes Laboratory, Leiden University, Postbus 9504, 2300 RA Leiden, The Netherlands
+ - name: Huygens-Kamerlingh Onnes Laboratory, Leiden University, Postbus 9504, 2300 RA Leiden, The Netherlands
    index: 1
  - name: Instituto Universitario de Física Aplicada a las Ciencias y las Tecnologías, Universidad de Alicante, 03690 Alicante, Spain
    index: 2
