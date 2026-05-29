@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bliss-line-search"
+version = "0.1.0"
+description = "BLiSS: Blind Line Search System"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "astropy",
+    "jupyter",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bliss*"]
+
+[tool.setuptools.package-data]
+"bliss.line_identification" = ["st_reduced.dat"]

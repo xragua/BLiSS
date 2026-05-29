@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>FUNCTIONS - BLiSS</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../css/custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "FUNCTIONS";
+        var mkdocs_page_input_path = "functions.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="..">
+          <img src="../images/logo.png" class="logo" alt="Logo"/>
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">GETTING STARTED</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">EXAMPLE</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="" href="../notebooks/example.ipynb">Lines in an eclipse spectra</a>
+                  </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">FUNCTIONS</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#rebin-functions">Rebin functions</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#rebin_binsx-y-sy-nbin">rebin_bins(x, y, sy, nbin)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#rebin_snrx-y-sy-snr_threshold">rebin_snr(x, y, sy, snr_threshold)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#rebin_resolutionx-y-sy-resolution">rebin_resolution(x, y, sy, resolution)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#find-emission-lines">Find emission lines</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#find_emission_linesspectra_or_energy-ynone-synone-en10-en210-show_plotfalse">find_emission_lines(spectra_or_energy, y=None, sy=None, en1=0, en2=10, show_plot=False)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#identify-lines">Identify lines</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#identify_linecenter_energy_kev-center_sigma_kevnone-v_doppler_kmsnone-pd_datast_reduced">identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, pd_data=st_reduced)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#add_most_probable_ionpd_fit-v_doppler_kms">add_most_probable_ion(pd_fit, v_doppler_kms)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#get_all_compatible_linespd_fit-v_doppler_kms">get_all_compatible_lines(pd_fit, v_doppler_kms)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#plot-functions">Plot functions</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_line_probdf">plot_line_prob(df)</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../contribute/">CONTRIBUTE</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../references/">REFERENCES</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../blissforisis/">BLISS FOR ISIS</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">BLiSS</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">FUNCTIONS</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="functions">FUNCTIONS</h1>
+<hr />
+<h2 id="rebin-functions">Rebin functions</h2>
+<hr />
+<h3 id="rebin_binsx-y-sy-nbin"><code>rebin_bins(x, y, sy, nbin)</code></h3>
+<p>Rebins spectra by grouping data points into fixed-size bins.<br />
+Each bin contains a specified number of data points (<code>nbin</code>), and values are combined<br />
+using weighted averages (<code>weights = 1 / σ²</code>).  </p>
+<p><strong>Use case:</strong><br />
+Reduce data resolution or smooth spectra without biasing results toward low-uncertainty points.</p>
+<p><strong>Parameters:</strong><br />
+- <code>x</code> <em>(array-like)</em> – Energy or wavelength array.<br />
+- <code>y</code> <em>(array-like)</em> – Flux or counts corresponding to <code>x</code>.<br />
+- <code>sy</code> <em>(array-like)</em> – 1σ uncertainties associated with <code>y</code>.<br />
+- <code>nbin</code> <em>(int)</em> – Number of points per new bin.</p>
+<p><strong>Returns:</strong><br />
+- <code>x_rebinned</code> <em>(np.ndarray)</em> – Weighted mean x-values per bin.<br />
+- <code>y_rebinned</code> <em>(np.ndarray)</em> – Weighted mean y-values per bin.<br />
+- <code>sy_rebinned</code> <em>(np.ndarray)</em> – Combined 1σ errors per bin.</p>
+<hr />
+<h3 id="rebin_snrx-y-sy-snr_threshold"><code>rebin_snr(x, y, sy, snr_threshold)</code></h3>
+<p>Performs adaptive rebinning based on a target signal-to-noise ratio (SNR).<br />
+Data points are accumulated until the combined bin reaches the desired SNR,<br />
+ensuring consistent statistical quality across the spectrum. Ideal for faint sources or data with variable noise levels.</p>
+<p><strong>Parameters:</strong><br />
+- <code>x</code> <em>(array-like)</em> – Energy or wavelength array.<br />
+- <code>y</code> <em>(array-like)</em> – Flux or counts corresponding to <code>x</code>.<br />
+- <code>sy</code> <em>(array-like)</em> – 1σ uncertainties associated with <code>y</code>.<br />
+- <code>snr_threshold</code> <em>(float)</em> – Minimum SNR per output bin.</p>
+<p><strong>Returns:</strong><br />
+- <code>x_rebinned</code> <em>(np.ndarray)</em> – Weighted mean x-values per bin.<br />
+- <code>y_rebinned</code> <em>(np.ndarray)</em> – Weighted mean y-values per bin.<br />
+- <code>sy_rebinned</code> <em>(np.ndarray)</em> – Combined 1σ errors per bin.</p>
+<hr />
+<h3 id="rebin_resolutionx-y-sy-resolution"><code>rebin_resolution(x, y, sy, resolution)</code></h3>
+<p>Rebins spectra according to a specified resolution along the x-axis (e.g., energy or wavelength).<br />
+The data are grouped within bins of fixed width (<code>resolution</code>), and combined through weighted averages. The aim of this method is to match instrumental resolution or create uniformly spaced spectral data.</p>
+<p><strong>Parameters:</strong><br />
+- <code>x</code> <em>(array-like)</em> – Energy or wavelength array.<br />
+- <code>y</code> <em>(array-like)</em> – Flux or counts corresponding to <code>x</code>.<br />
+- <code>sy</code> <em>(array-like)</em> – 1σ uncertainties associated with <code>y</code>.<br />
+- <code>resolution</code> <em>(float)</em> – Desired bin width for the rebinned spectrum.</p>
+<p><strong>Returns:</strong><br />
+- <code>x_rebinned</code> <em>(np.ndarray)</em> – Weighted mean x-values per bin.<br />
+- <code>y_rebinned</code> <em>(np.ndarray)</em> – Weighted mean y-values per bin.<br />
+- <code>sy_rebinned</code> <em>(np.ndarray)</em> – Combined 1σ errors per bin.</p>
+<hr />
+<h2 id="find-emission-lines">Find emission lines</h2>
+<hr />
+<h3 id="find_emission_linesspectra_or_energy-ynone-synone-en10-en210-show_plotfalse"><code>find_emission_lines(spectra_or_energy, y=None, sy=None, en1=0, en2=10, show_plot=False)</code></h3>
+<p>Performs end-to-end emission-line detection and characterization.</p>
+<ol>
+<li><strong>Input handling:</strong> accepts a file path to a 4-column ASCII spectrum (<code>E_low, E_high, counts, error</code>) or arrays <code>x, y, sy</code>.  </li>
+<li><strong>Continuum estimation:</strong> computes <code>base</code> and <code>ylines = y - base</code>.  </li>
+<li><strong>Detection:</strong> isolates candidate line regions and fits Gaussian profiles.  </li>
+<li><strong>Simulation and scoring:</strong> builds synthetic lines, evaluates probabilities with a Gaussian Mixture Model (GMM).  </li>
+<li><strong>Final fitting:</strong> re-fits selected lines globally to refine parameters.  </li>
+<li><strong>Metrics:</strong> computes SNR, integrated area, errors, and equivalent width.</li>
+</ol>
+<p><strong>Parameters:</strong><br />
+- <code>spectra_or_energy</code> <em>(str or array-like)</em> – Path to ASCII file or energy array.<br />
+- <code>y</code> <em>(array-like, optional)</em> – Flux or counts (required if <code>spectra_or_energy</code> is an array).<br />
+- <code>sy</code> <em>(array-like, optional)</em> – 1σ uncertainties (required if <code>spectra_or_energy</code> is an array).<br />
+- <code>en1</code> <em>(float, optional)</em> – Lower limit of energy range for line selection (default = 0).<br />
+- <code>en2</code> <em>(float, optional)</em> – Upper limit of energy range for line selection (default = 10).<br />
+- <code>show_plot</code> <em>(bool, optional)</em> – If <code>True</code>, plots fitted lines and continuum.</p>
+<p><strong>Returns:</strong><br />
+- <code>pd.DataFrame</code> – Table of detected emission lines with columns:<br />
+<code>center, sigma, amplitude, ecenter, esigma, eamplitude, base_on_line, value_on_line, noise_on_block, snr, relative_power, area, earea, ew, cluster_probability</code>.</p>
+<blockquote>
+<p><strong>Notes:</strong><br />
+- Input files must contain four whitespace-separated columns: <code>E_low, E_high, counts, error</code>.<br />
+- SNR = <code>amplitude / noise_on_block</code>.<br />
+- Area = <code>amplitude * sigma * sqrt(2π)</code>.<br />
+- EW ≈ ∑((line_flux / continuum) × dE) around ±2σ.</p>
+</blockquote>
+<hr />
+<h2 id="identify-lines">Identify lines</h2>
+<p>Functions for matching detected emission features with catalogued atomic transitions.</p>
+<hr />
+<h3 id="identify_linecenter_energy_kev-center_sigma_kevnone-v_doppler_kmsnone-pd_datast_reduced"><code>identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, pd_data=st_reduced)</code></h3>
+<p>Finds and ranks candidate emission lines near an observed energy.<br />
+The search window is defined by the Doppler velocity tolerance (and optionally by the line’s σ).<br />
+Candidates are ranked by their scaled flux (Aul strength).</p>
+<p><strong>Parameters:</strong><br />
+- <code>center_energy_keV</code> <em>(float)</em> – Observed line energy in keV.<br />
+- <code>center_sigma_keV</code> <em>(float, optional)</em> – Uncertainty (σ) in the observed energy in keV.<br />
+- <code>v_doppler_kms</code> <em>(float, optional)</em> – Doppler velocity tolerance in km/s.<br />
+- <code>pd_data</code> <em>(pd.DataFrame, optional)</em> – Reference line catalog (default = <code>st_reduced</code>, from the XSTAR database).</p>
+<p><strong>Returns:</strong><br />
+- <code>pd.DataFrame</code> – Candidate emission lines within the energy window, sorted by <code>scaled_flux</code> (descending).<br />
+  Includes computed Doppler shift values (<code>doppler_kms</code>) and other relevant line fields.</p>
+<blockquote>
+<p><strong>Note:</strong> Uses the <strong>XSTAR</strong> line database as the default catalog for matching.</p>
+</blockquote>
+<hr />
+<h3 id="add_most_probable_ionpd_fit-v_doppler_kms"><code>add_most_probable_ion(pd_fit, v_doppler_kms)</code></h3>
+<p>Annotates each fitted emission line with the <strong>most probable ion</strong> from the reference catalog,<br />
+based on proximity within a Doppler velocity tolerance.</p>
+<p><strong>Parameters:</strong><br />
+- <code>pd_fit</code> <em>(pd.DataFrame)</em> – DataFrame of detected emission lines containing at least a <code>center</code> column<br />
+  (and optionally <code>sigma</code>).<br />
+- <code>v_doppler_kms</code> <em>(float)</em> – Doppler velocity tolerance in km/s used for matching.</p>
+<p><strong>Returns:</strong><br />
+- <code>pd.DataFrame</code> – Combined DataFrame containing the original fitted lines plus the most probable ion<br />
+  and its catalog properties (e.g., <code>ion</code>, <code>energy_keV</code>, <code>doppler_kms</code>, etc.).</p>
+<hr />
+<h3 id="get_all_compatible_linespd_fit-v_doppler_kms"><code>get_all_compatible_lines(pd_fit, v_doppler_kms)</code></h3>
+<p>For each detected emission line, retrieves <strong>all possible catalog lines</strong> that are compatible<br />
+with the specified Doppler velocity window.</p>
+<p><strong>Parameters:</strong><br />
+- <code>pd_fit</code> <em>(pd.DataFrame)</em> – DataFrame of detected emission lines with at least a <code>center</code> column<br />
+  (and optionally <code>sigma</code>).<br />
+- <code>v_doppler_kms</code> <em>(float)</em> – Doppler velocity tolerance in km/s used for line matching.</p>
+<p><strong>Returns:</strong><br />
+- <code>dict[int, pd.DataFrame]</code> – Dictionary mapping each index of <code>pd_fit</code> to a DataFrame<br />
+  containing all matching catalog lines (empty if no matches are found).</p>
+<hr />
+<h2 id="plot-functions">Plot functions</h2>
+<hr />
+<h3 id="plot_line_probdf"><code>plot_line_prob(df)</code></h3>
+<p>Plots Gaussian components (e.g., detected emission lines) from a fitted dataset.<br />
+Each Gaussian is colored according to its cluster probability,<br />
+with optional ion labels if the <code>ion</code> column is present.  </p>
+<p><strong>Use case:</strong><br />
+Visualize fitted emission lines and their likelihoods in an informative, publication-ready plot.</p>
+<p><strong>Parameters:</strong><br />
+- <code>df</code> <em>(pd.DataFrame)</em> – DataFrame containing Gaussian fit results with columns such as<br />
+<code>center</code>, <code>sigma</code>, <code>amplitude</code>, and <code>cluster_probability</code>.<br />
+  If an <code>ion</code> column is present, labels will be added automatically.</p>
+<p><strong>Returns:</strong><br />
+- <em>None</em> – Displays a matplotlib figure showing all fitted components with color-coded probabilities.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href=".." class="btn btn-neutral float-left" title="GETTING STARTED"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../contribute/" class="btn btn-neutral float-right" title="CONTRIBUTE">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href=".." style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../contribute/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

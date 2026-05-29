@@ -1,0 +1,33 @@
+site_name: BLiSS
+
+theme:
+    palette:
+        scheme: slate
+        primary: pink
+        
+    name: readthedocs
+    logo: images/logo.png  # Add this line to specify the logo path
+
+extra_css:
+    - css/custom.css  # Include your custom CSS file here
+
+plugins:
+    - mkdocs-jupyter
+
+nav:
+    -  GETTING STARTED: index.md
+    
+    - EXAMPLE:
+    
+
+        - Lines in an eclipse spectra: notebooks/example.ipynb
+    
+        
+
+    - FUNCTIONS: functions.md
+    
+    - CONTRIBUTE: contribute.md
+    
+    - REFERENCES: references.md
+    
+    - BLISS FOR ISIS: blissforisis.md
