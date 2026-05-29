@@ -61,9 +61,6 @@ Positive structures in the excess spectrum are interpreted as candidate emission
 
 Detected structures are characterized with Gaussian models. For a single component, BLiSS uses
 
-\[
-G(E) = A \exp\left[-\frac{(E-E_0)^2}{2\sigma^2}\right],
-\]
 
 where \(A\) is the amplitude, \(E_0\) is the centroid energy, and \(\sigma\) is the Gaussian width. Multi-peak regions are represented as sums of Gaussian components. Initial parameter estimates are obtained automatically from the peak-detection stage, and fits are performed with nonlinear least-squares optimization. For each candidate, BLiSS reports centroid energy, width, amplitude, uncertainties, local noise estimates, signal-to-noise ratio, equivalent width, line area, and relative-excess metrics.
 
@@ -71,21 +68,11 @@ A distinctive feature of BLiSS is the construction of synthetic comparison popul
 
 BLiSS combines real and synthetic candidates in a multidimensional feature space, using quantities such as Gaussian amplitude, width, signal-to-noise ratio, local contrast, and width-to-amplitude ratio. These features are standardized before Gaussian Mixture Models are fitted. The number of GMM components is selected using the Bayesian Information Criterion. For each cluster \(C_k\), BLiSS estimates
 
-\[
-P_k = \frac{N_{\mathrm{real},k}}
-{N_{\mathrm{real},k} + N_{\mathrm{synthetic},k}}.
-\]
-
 This cluster-based score is not a formal Bayesian posterior probability. Rather, it is an empirical reliability score that quantifies how strongly a candidate resembles the real-detection population rather than the synthetic comparison population.
 
 # Atomic-line identification
 
 BLiSS includes optional routines for matching fitted centroids against XSTAR atomic transition tables. For each observed candidate energy \(E_0\), the package searches for transitions satisfying a user-defined Doppler compatibility condition,
-
-\[
-\left|\frac{E_{\mathrm{observed}} - E_{\mathrm{atomic}}}
-{E_{\mathrm{atomic}}}\right| c < v_{\mathrm{max}}.
-\]
 
 Compatible transitions can then be ranked using atomic-prior scores based on quantities such as elemental abundance weights and Einstein \(A_{ul}\) coefficients from XSTAR-related atomic data [@Bautista_2001a]. This ranking is intended as a heuristic guide, not as a physical prediction of line flux. The identification stage remains independent from the blind-search stage, so users may perform candidate detection without adopting any specific atomic interpretation.
 
