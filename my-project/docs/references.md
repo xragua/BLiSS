@@ -1,21 +1,24 @@
-## References
+## Related software and resources
 
-- XRISM Science Team. (2022). *XRISM Quick Reference*. arXiv e-prints, arXiv:2202.05399. https://doi.org/10.48550/arXiv.2202.05399
+BLiSS is developed in the context of modern X-ray spectral analysis and line-identification tools. Relevant instruments, analysis packages, and related software include:
 
-- Barret, D., Lam Trong, T., den Herder, J.-W., & Piro, L. (2016). The Athena X-ray Integral Field Unit (X-IFU). In J.-W. A. den Herder, T. Takahashi, & M. Bautz (Eds.), *Space Telescopes and Instrumentation 2016: Ultraviolet to Gamma Ray* (Vol. 9905, 99052F). SPIE. https://doi.org/10.1117/12.2232432
+### X-ray missions and instrumentation
 
-- Arnaud, K. A. (1996). XSPEC: The first ten years. In G. H. Jacoby & J. Barnes (Eds.), *Astronomical Data Analysis Software and Systems V* (ASP Conference Series, Vol. 101, p. 17). https://ui.adsabs.harvard.edu/abs/1996ASPC..101...17A
+- **XRISM** — High-resolution X-ray spectroscopy mission, with Resolve providing microcalorimeter capabilities for detailed line diagnostics.
+- **Athena/X-IFU** — Future high-resolution X-ray integral field unit designed for sensitive spectroscopic studies of hot and energetic astrophysical plasmas.
 
-- Kaastra, J. S., Mewe, R., & Nieuwenhuijzen, H. (1996). SPEX: A new code for spectral analysis of X and UV spectra. In K. Yamashita & T. Watanabe (Eds.), *UV and X-ray Spectroscopy of Astrophysical and Laboratory Plasmas* (pp. 411–414).
+### X-ray spectral fitting and analysis tools
 
-- Houck, J. C., & Denicola, L. A. (2013). *ISIS: Interactive Spectral Interpretation System*. Astrophysics Source Code Library, ascl:1302.002. https://ascl.net/1302.002
+- **XSPEC** — Widely used package for modelling and fitting X-ray spectra.
+- **SPEX** — Spectral analysis code for X-ray and UV spectroscopy.
+- **ISIS** — Interactive Spectral Interpretation System for modelling and analysing high-energy spectra.
+- **Sherpa** — Mission-independent modelling and fitting environment developed for astronomical data analysis.
+- **jaxspec** — Modern Python library for fast and robust X-ray spectral fitting.
+- **BXA** — Bayesian X-ray Analysis package for Bayesian inference and nested sampling in X-ray spectroscopy.
 
-- Freeman, P., Doe, S., & Siemiginowska, A. (2001). Sherpa: A mission-independent data analysis application. In J.-L. Starck & F. Murtagh (Eds.), *Astronomical Data Analysis* (SPIE Conference Series, Vol. 4477, pp. 76–87). https://doi.org/10.1117/12.447161
+### Spectroscopic and line-analysis tools
 
-- Astropy Project. (2025). *specutils: Spectroscopic analysis and reduction* [Software, version 2.0.0]. Zenodo. https://doi.org/10.5281/zenodo.15652958
-
-- Fernandez, V. (2021). *LiMe: A Line Measuring library* [Documentation]. https://lime-stable.readthedocs.io/en/latest/
-
-- Tu, Z., Fang, X., Williams, R., & Liu, J. (2025). PyEMILI: A new generation computer-aided spectral line identifier. *The Astrophysical Journal Supplement Series, 277*(1), 13. https://doi.org/10.3847/1538-4365/adae00
-
-- Bautista, M. A., & Kallman, T. R. (2001). The XSTAR Atomic Database. *The Astrophysical Journal Supplement Series, 134*(1), 139–149. https://doi.org/10.1086/320363
+- **specutils** — Astropy-affiliated package for spectroscopic analysis and reduction.
+- **LiMe** — Python library for measuring spectral lines.
+- **PyEMILI** — Computer-aided spectral line identification tool.
+- **XSTAR atomic database** — Atomic database widely used for modelling photoionized plasmas.

@@ -10,7 +10,7 @@ tags:
   - atomic databases
 authors:
   - given-names: Luis
-    surname: Abalos
+    surname: Abalo
     orcid: 0009-0007-9988-0202
     equal-contrib: true
     affiliation: 1
@@ -18,11 +18,13 @@ authors:
     surname: Sanjurjo-Ferrín
     orcid: 0009-0001-0378-7879
     equal-contrib: true
-    affiliation: 1
+    affiliation: 2
 
 affiliations:
+ - name: Huygens-Kamerlingh Onnes Laboratory, Leiden University, Postbus 9504, 2300 RA Leiden, The Netherlands
+   index: 1 
  - name: Instituto Universitario de Física Aplicada a las Ciencias y las Tecnologías, Universidad de Alicante, 03690 Alicante, Spain
-   index: 1
+   index: 2
 
 date: 29 May 2026
 bibliography: paper.bib
