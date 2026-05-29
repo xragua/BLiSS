@@ -52,11 +52,8 @@ If you have any questions or need assistance, please feel free to reach out: gra
 ---------------------------------------------------------
 
 
-Or download the code from [here](https://github.com/xragua/bliss/releases/tag/0.2.9).
 
-Some examples of their usage are presented [here](https://github.com/xragua/bliss/tree/main/example).
-
-And here [here](https://github.com/xragua/bliss) is the page of this package 
+[Here](https://github.com/xragua/bliss) you can find the source code.
 
 ---
 
