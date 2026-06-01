@@ -1,3 +1,5 @@
+HTML: <a href="https://joss.theoj.org/papers/aaea14e694ee06c3d7258dcf71487da7"><img src="https://joss.theoj.org/papers/aaea14e694ee06c3d7258dcf71487da7/status.svg"></a>
+Markdown: [![status](https://joss.theoj.org/papers/aaea14e694ee06c3d7258dcf71487da7/status.svg)](https://joss.theoj.org/papers/aaea14e694ee06c3d7258dcf71487da7)
 # BLiSS — Blind Line Search System
 
 **BLiSS** (Blind Line Search System) is an open-source Python package for finding emission lines in spectra without telling the code where to look first.
