@@ -14,12 +14,31 @@ authors:
     orcid: 0009-0007-9988-0202
     equal-contrib: true
     affiliation: 1
+    
   - given-names: Graciela
     surname: Sanjurjo-Ferrín
     orcid: 0009-0001-0378-7879
     equal-contrib: true
     affiliation: 2
-
+    
+  - given-names: Jessica 
+    surname: Planelles Villalva
+    orcid: 0009-0007-9988-0202
+    equal-contrib: true
+    affiliation: 2
+    
+  - given-names: Jose Miguel 
+    surname: Torrejón
+    orcid: 0000-0002-5967-5163
+    equal-contrib: true
+    affiliation: 2
+    
+  - given-names: Jose Joaquín 
+    surname: Rodes-Roca
+    orcid: 0000-0003-4363-8138
+    equal-contrib: true
+    affiliation: 2 
+    
 affiliations:
  - name: Huygens-Kamerlingh Onnes Laboratory, Leiden University, Postbus 9504, 2300 RA Leiden, The Netherlands
    index: 1 
