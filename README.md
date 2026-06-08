@@ -1,5 +1,4 @@
 
-%[![status](https://joss.theoj.org/papers/aaea14e694ee06c3d7258dcf71487da7/status.svg)]%(https://joss.theoj.org/papers/aaea14e694ee06c3d7258dcf71487da7)
 
 # BLiSS — Blind Line Search System
 
