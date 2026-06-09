@@ -90,8 +90,8 @@ BLiSS includes optional routines for matching fitted centroids against XSTAR ato
 Compatible transitions can then be ranked using atomic-prior scores based on quantities such as elemental abundance weights and Einstein coefficients from XSTAR-related atomic data [@Bautista_2001a]. This ranking is intended as a heuristic guide, not as a physical prediction of line flux. The identification stage remains independent from the blind-search stage, so users may perform candidate detection without adopting any specific atomic interpretation.
 
 # Applications
+Earlier versions of this code have already been successfully used in published papers, while the current package version has been used in accepted manuscripts (see, for example, [@2026arXiv260609579S]). 
 
-This code, now structured and collected in a package, has been successfully used in published papers and manuscripts under review.
 
 # Acknowledgements
 
