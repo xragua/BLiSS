@@ -22,4 +22,4 @@ def load_atomic_database(path=None):
         path = Path(__file__).resolve().parent / 'st_reduced.dat'
     return pd.read_csv(path, sep='\t')
 st_reduced = load_atomic_database()
-st_reduced['scaled_flux'] = st_reduced.Aul * st_reduced.xdef
+st_reduced['scaled_prob'] = st_reduced.xdef

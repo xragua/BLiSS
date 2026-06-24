@@ -46,18 +46,24 @@ def rebin_bins(x, y, sy, nbin):
         uncertainties for each rebinned group.
     """
     x, y, sy = _clean_arrays(x, y, sy)
-    y_new, x_new, sy_new = ([], [], [])
-    for i in range(len(y) - nbin - 1):
-        w = pow(1 / sy[i * nbin:(i + 1) * nbin], 2)
-        if sum(w) > 0:
-            x_bin = x[i * nbin:(i + 1) * nbin]
-            y_bin = y[i * nbin:(i + 1) * nbin]
-            sy_new.append(pow(1 / sum(w), 0.5))
-            y_new.append(sum(y_bin * w) / sum(w))
-            x_new.append(sum(x_bin * w) / sum(w))
-    return (x_new, y_new, sy_new)
+    x_new, y_new, sy_new = [], [], []
+    for start in range(0, len(y), nbin):
+        stop = start + nbin
+        x_bin = x[start:stop]
+        y_bin = y[start:stop]
+        sy_bin = sy[start:stop]
+        if len(y_bin) == 0:
+            continue
+        w = 1.0 / sy_bin**2
+        if np.sum(w) <= 0:
+            continue
+        x_new.append(np.sum(x_bin * w) / np.sum(w))
+        y_new.append(np.sum(y_bin * w) / np.sum(w))
+        sy_new.append(np.sqrt(1.0 / np.sum(w)))
 
-def rebin_snr(x, y, sy, snr_threshold):
+    return np.array(x_new), np.array(y_new), np.array(sy_new)
+
+def rebin_snr(x, y, sy, min_snr=5,min_bins=1):
     """Accumulate adjacent bins until a target uncertainty-to-signal criterion is met.
 
     Parameters
@@ -82,24 +88,24 @@ def rebin_snr(x, y, sy, snr_threshold):
     x, y, sy = _clean_arrays(x, y, sy)
     w, y_bin, x_bin, sy_bin = ([], [], [], [])
     y_new, x_new, sy_new = ([], [], [])
-    for i in range(len(x) - 1):
-        w.append(pow(1 / sy[i], 2))
-        x_bin.append(x[i])
-        y_bin.append(y[i])
-        sy_bin.append(sy[i])
-        sy_weight = pow(1 / sum(np.array(w)), 0.5)
-        y_weight = sum(np.array(y_bin) * np.array(w)) / sum(np.array(w))
-        snr_now = sy_weight / (y_weight + min(y) / 1000000.0)
-        if snr_now <= snr_threshold:
-            w = np.array(w)
-            y_bin = np.array(y_bin)
-            sy_bin = np.array(sy_bin)
-            x_bin = np.array(x_bin)
-            sy_new.append(pow(1 / sum(w), 0.5))
-            y_new.append(sum(y_bin * w) / sum(w))
-            x_new.append(sum(x_bin * w) / sum(w))
-            w, y_bin, x_bin, sy_bin = ([], [], [], [])
-    return (x_new, y_new, sy_new)
+    for xi, yi, syi in zip(x, y, sy):
+        x_bin.append(xi)
+        y_bin.append(yi)
+        sy_bin.append(syi)
+        x_arr = np.array(x_bin)
+        y_arr = np.array(y_bin)
+        sy_arr = np.array(sy_bin)
+        w = 1.0 / sy_arr**2
+        y_weighted = np.sum(y_arr * w) / np.sum(w)
+        x_weighted = np.sum(x_arr * w) / np.sum(w)
+        sy_weighted = np.sqrt(1.0 / np.sum(w))
+        snr_now = np.abs(y_weighted) / sy_weighted
+        if (snr_now >= min_snr) and (len(y_bin) >= min_bins):
+            x_new.append(x_weighted)
+            y_new.append(y_weighted)
+            sy_new.append(sy_weighted)
+            x_bin, y_bin, sy_bin = [], [], []
+    return np.array(x_new), np.array(y_new), np.array(sy_new)
 
 def rebin_resolution(x, y, sy, resolution):
     """Rebin a spectrum onto fixed-width coordinate intervals.

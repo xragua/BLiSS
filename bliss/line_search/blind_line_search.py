@@ -14,7 +14,7 @@ from ..synthetic_probability.synthetic_spectra import calculate_synthetic_lines_
 from ..synthetic_probability.gmm_probability import eval_line_probability_gmm
 from ..plotting.run_output_manager import ensure_output_folder
 CANDIDATE_COLUMNS = ['center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude', 'relative_power', 'rsq', 'noise_on_block', 'value_on_line', 'base_on_line', 'cluster_probability']
-FINAL_OUTPUT_COLUMNS = ['center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude', 'base_on_line', 'value_on_line', 'noise_on_block', 'snr', 'relative_power', 'area', 'earea', 'ew', 'cluster_probability']
+FINAL_OUTPUT_COLUMNS = ['center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude', 'base_on_line', 'value_on_line', 'noise_on_block', 'snr_peak','snr_area', 'relative_power', 'area', 'earea', 'ew', 'cluster_probability']
 
 @dataclass
 class BlindLineSearchConfig:
@@ -113,7 +113,7 @@ class BlindLineSearchPipeline:
         output_dir = ensure_output_folder(output_dir)
         spectrum = self._load_input(spectra_or_energy, y, sy)
         base = base_calculator(spectrum.values)
-        ylines = spectrum.values - base
+        ylines = np.maximum(spectrum.values - base, 0)
         raw_candidates = return_raw_lines(spectrum.energy, spectrum.values, spectrum.uncertainties, ylines, base)
         simx, simy, simsy = calculate_synthetic_lines_spectra(spectrum.energy, ylines, spectrum.uncertainties, self.config.num_synthetic_simulations)
         synthetic_candidates = return_raw_lines(simx, simy, simsy, simy, np.zeros(len(simx)))
@@ -225,10 +225,11 @@ class BlindLineSearchPipeline:
             return (pd.DataFrame(columns=FINAL_OUTPUT_COLUMNS), yfit)
         cols = ['amplitude', 'sigma', 'eamplitude', 'esigma']
         result[cols] = result[cols].apply(pd.to_numeric, errors='coerce')
-        result['snr'] = result.amplitude / result.noise_on_block
+        result['snr_peak'] = result.amplitude / result.noise_on_block
         k = np.sqrt(2.0 * np.pi)
         result['area'] = result['amplitude'] * result['sigma'] * k
         result['earea'] = np.sqrt((result['sigma'] * k * result['eamplitude']) ** 2 + (result['amplitude'] * k * result['esigma']) ** 2)
+        result['snr_area'] = result.area / result.earea
         ew_vals = []
         for row in result.itertuples(index=False):
             center = float(row.center)
@@ -241,7 +242,7 @@ class BlindLineSearchPipeline:
             ew_vals.append(ew)
         result['ew'] = ew_vals
         result = result[FINAL_OUTPUT_COLUMNS]
-        result.loc[result.snr >= self.config.snr_confidence_threshold, 'cluster_probability'] = 1
+        result.loc[result.snr_peak >= self.config.snr_confidence_threshold, 'cluster_probability'] = 1
         return (result, yfit)
 
     def _plot_final_fit(self, spectrum: PreparedSpectrum, base: np.ndarray, yfit: np.ndarray, output_path: str | Path) -> None:

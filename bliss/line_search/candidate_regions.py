@@ -130,7 +130,7 @@ def _fit_candidate_block(block, block_index):
     """
     rows = []
     noise_on_block = np.mean(block.uncertainties)
-    if len(block.values) > 3 and max(block.values) > 0:
+    if len(block.values) > 2 and max(block.values) > 0:
         res_dif = 0.001
         peaks = find_peaks_new(block.energy, block.values)
         if len(peaks) > 0:

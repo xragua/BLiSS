@@ -78,12 +78,12 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
         returned.
     pd_data : pandas.DataFrame, default: bundled atomic table
         Atomic transition table to search. It must include ``energy_keV`` and the
-        columns used for ranking, such as ``scaled_flux``.
+        columns used for ranking, such as ``scaled_prob``.
 
     Returns
     -------
     pandas.DataFrame
-        Compatible transitions sorted by decreasing ``scaled_flux`` and including
+        Compatible transitions sorted by decreasing ``scaled_prob`` and including
         the implied Doppler shift in km/s.
     """
     c = 299792.458
@@ -100,8 +100,11 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
     idx = np.where((elines >= energy_min) & (elines <= energy_max))[0]
     candidates = st_reduced.iloc[idx].copy().reset_index(drop=True)
     candidates['doppler_kms'] = c * (center_energy_keV - candidates['energy_keV']) / candidates['energy_keV']
-    candidates = candidates.sort_values(by='scaled_flux', ascending=False).reset_index(drop=True)
-    desired_order = ['ion',  'energy_keV', 'doppler_kms', 'center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude', 'base_on_line', 'value_on_line', 'noise_on_block', 'snr', 'relative_power', 'area', 'earea', 'ew', 'cluster_probability']
+    candidates = candidates.sort_values(by='scaled_prob', ascending=False).reset_index(drop=True)
+    desired_order = ['ion',  'energy_keV', 'doppler_kms', 'center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude',
+       'base_on_line', 'value_on_line', 'noise_on_block', 'snr_peak',
+       'snr_area', 'relative_power', 'area', 'earea', 'ew',
+       'cluster_probability']
     return candidates[[col for col in desired_order if col in candidates.columns]]
 
 def add_most_probable_ion(pd_fit, v_doppler_kms):
@@ -133,7 +136,10 @@ def add_most_probable_ion(pd_fit, v_doppler_kms):
             top_candidates.append(pd.Series(dtype='object'))
     ion_info_df = pd.DataFrame(top_candidates).reset_index(drop=True)
     result = pd.concat([pd_fit.reset_index(drop=True), ion_info_df], axis=1)
-    desired_order = ['ion',  'energy_keV', 'doppler_kms', 'center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude', 'base_on_line', 'value_on_line', 'noise_on_block', 'snr', 'relative_power', 'area', 'earea', 'ew', 'cluster_probability']
+    desired_order = ['ion',  'energy_keV', 'doppler_kms', 'center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude',
+       'base_on_line', 'value_on_line', 'noise_on_block', 'snr_peak',
+       'snr_area', 'relative_power', 'area', 'earea', 'ew',
+       'cluster_probability']
     return result[[col for col in desired_order if col in result.columns]]
 
 def get_all_compatible_lines(pd_fit, v_doppler_kms):

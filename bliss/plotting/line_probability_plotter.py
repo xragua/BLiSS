@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-def plot_line_prob(df, show=True):
+def plot_line_prob(df, show=True, size_fig=None):
     """Plot candidate cluster probability as a function of fitted line energy.
 
     Parameters
@@ -24,6 +24,8 @@ def plot_line_prob(df, show=True):
     norm = plt.Normalize(vmin=unique_probs.min(), vmax=unique_probs.max())
     color_map = {p: cmap(norm(p)) for p in unique_probs}
     plt.figure(figsize=(max(df.center) - min(df.center), 5))
+    if size_fig:
+        plt.figure(figsize=size_fig)
     has_ion = 'ion' in df.columns
     max_y = 0
     offset = 0.02 * df['amplitude'].max()

@@ -115,9 +115,41 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
     lines['real'] = 1
     simlines['real'] = 0
     lines_sim_real = pd.concat([lines, simlines])
-    lines_sim_real['ratio'] = lines_sim_real.sigma / lines_sim_real.amplitude
-    lines_sim_real['snr'] = lines_sim_real.value_on_line / lines_sim_real.noise_on_block
-    data = lines_sim_real[['amplitude', 'sigma', 'snr', 'ratio']]
+    eps = 1e-12
+    k = np.sqrt(2.0 * np.pi)
+
+    lines_sim_real['peak_snr'] = (
+        lines_sim_real['amplitude'] /
+        (lines_sim_real['noise_on_block'] + eps)
+    )
+    lines_sim_real['ratio'] = (
+        lines_sim_real['sigma'] /
+        (lines_sim_real['amplitude'] + eps)
+    )
+    lines_sim_real['area'] = (
+        lines_sim_real['amplitude'] *
+        lines_sim_real['sigma'] *
+        k
+    )
+    lines_sim_real['earea'] = np.sqrt(
+        (lines_sim_real['sigma'] * k * lines_sim_real['eamplitude']) ** 2
+        +
+        (lines_sim_real['amplitude'] * k * lines_sim_real['esigma']) ** 2
+    )
+    lines_sim_real['area_snr'] = (
+        lines_sim_real['area'] /
+        (lines_sim_real['earea'] + eps)
+    )
+    for col in ['peak_snr', 'ratio', 'area', 'earea', 'area_snr']:
+        lines_sim_real[col] = np.nan_to_num(
+            lines_sim_real[col],
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0
+        )
+    data = lines_sim_real[
+        ['amplitude', 'sigma', 'peak_snr', 'ratio', 'area_snr']
+    ]
     scaler = StandardScaler()
     X = scaler.fit_transform(data)
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
