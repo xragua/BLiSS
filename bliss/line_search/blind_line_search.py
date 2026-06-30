@@ -13,8 +13,17 @@ from .gaussian_models import n_gaussian, p0_generator_final
 from ..synthetic_probability.synthetic_spectra import calculate_synthetic_lines_spectra
 from ..synthetic_probability.gmm_probability import eval_line_probability_gmm
 from ..plotting.run_output_manager import ensure_output_folder
-CANDIDATE_COLUMNS = ['center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude', 'relative_power', 'rsq', 'noise_on_block', 'value_on_line', 'base_on_line', 'cluster_probability']
-FINAL_OUTPUT_COLUMNS = ['center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude', 'base_on_line', 'value_on_line', 'noise_on_block', 'snr_peak','snr_area', 'relative_power', 'area', 'earea', 'ew', 'cluster_probability']
+
+LINE_OUTPUT_COLUMNS = [
+    'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
+    'relative_power', 'noise_on_block', 'value_on_line',
+    'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
+    'snr_area', 'ew', 'cluster_probability'
+]
+
+CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
+FINAL_OUTPUT_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
+
 
 @dataclass
 class BlindLineSearchConfig:
@@ -23,19 +32,20 @@ class BlindLineSearchConfig:
     Attributes
     ----------
     en1, en2 : float
-        Lower and upper energy limits used when selecting final candidates.
+        Lower and upper energy limits used when selecting candidates.
     num_synthetic_simulations : int
         Number of shuffled synthetic spectra generated for probability estimation.
     final_fit_maxfev : int
         Maximum number of function evaluations allowed in the final ``curve_fit``.
     snr_confidence_threshold : float
-        Signal-to-noise ratio above which a candidate is assigned probability 1.
+        Any available S/N diagnostic above which a candidate is assigned probability 1.
     """
     en1: float = 0.0
     en2: float = 10.0
     num_synthetic_simulations: int = 2
     final_fit_maxfev: int = 100000
     snr_confidence_threshold: float = 4.0
+
 
 @dataclass
 class PreparedSpectrum:
@@ -57,261 +67,691 @@ class PreparedSpectrum:
     uncertainties: np.ndarray
     bin_width: np.ndarray
 
-class BlindLineSearchPipeline:
-    """Run the full blind emission-line search on one spectrum.
 
-    The pipeline estimates an empirical baseline, searches positive residuals for
-    Gaussian-like line candidates, estimates false-positive probability using
-    synthetic spectra, refits the selected candidates together, and writes compact
-    run outputs.
+def prepare_spectrum(spectra_or_energy, y=None, sy=None, bin_width=None) -> PreparedSpectrum:
+    """Load and sort spectrum data from a file, arrays, or a Spectrum-like object.
+
+    Parameters
+    ----------
+    spectra_or_energy : str, pathlib.Path, Spectrum-like object, or array-like
+        Four-column text spectrum file, an object with ``energy``, ``values`` and
+        ``uncertainties`` attributes, or the coordinate array for direct array input.
+    y : array-like or None, default: None
+        Spectral values for direct array input.
+    sy : array-like or None, default: None
+        One-sigma uncertainties for direct array input.
+    bin_width : array-like or None, default: None
+        Optional bin widths for direct array input. If omitted, they are estimated
+        from adjacent coordinate spacing.
+
+    Returns
+    -------
+    PreparedSpectrum
+        Spectrum sorted by increasing coordinate value.
+    """
+    if isinstance(spectra_or_energy, (str, Path)):
+        spectra = pd.read_csv(
+            spectra_or_energy,
+            sep='\\s+',
+            comment='#',
+            header=None,
+            engine='python',
+        )
+        if spectra.shape[1] != 4:
+            raise ValueError('File must have 4 columns: E_low, E_high, counts, error.')
+        x = np.asarray((spectra[0] + spectra[1]) / 2.0)
+        dE = np.asarray(spectra[1] - spectra[0])
+        y = np.asarray(spectra[2])
+        sy = np.asarray(spectra[3])
+    elif all(hasattr(spectra_or_energy, attr) for attr in ('energy', 'values', 'uncertainties')):
+        x = np.asarray(spectra_or_energy.energy)
+        y = np.asarray(spectra_or_energy.values)
+        sy = np.asarray(spectra_or_energy.uncertainties)
+        dE_obj = getattr(spectra_or_energy, 'bin_width', None)
+        if dE_obj is None:
+            dE = _estimate_bin_width(x)
+        else:
+            dE = np.asarray(dE_obj)
+    else:
+        x = np.asarray(spectra_or_energy)
+        if y is None or sy is None:
+            raise ValueError('If using direct arrays, y and sy must be provided.')
+        y = np.asarray(y)
+        sy = np.asarray(sy)
+        if bin_width is None:
+            dE = _estimate_bin_width(x)
+        else:
+            dE = np.asarray(bin_width)
+
+    if not (len(x) == len(y) == len(sy) == len(dE)):
+        raise ValueError('energy, values, uncertainties, and bin_width must have the same length.')
+
+    valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(sy) & np.isfinite(dE) & (sy > 0)
+    x = x[valid]
+    y = y[valid]
+    sy = sy[valid]
+    dE = dE[valid]
+
+    order = np.argsort(x)
+    return PreparedSpectrum(
+        energy=x[order],
+        values=y[order],
+        uncertainties=sy[order],
+        bin_width=dE[order],
+    )
+
+
+def _estimate_bin_width(x: np.ndarray) -> np.ndarray:
+    """Estimate bin widths from a one-dimensional coordinate grid."""
+    x = np.asarray(x, dtype=float)
+    if len(x) == 0:
+        return np.array([], dtype=float)
+    if len(x) == 1:
+        return np.ones_like(x, dtype=float)
+    dE = np.diff(x)
+    return np.append(dE, dE[-1])
+
+
+def _baseline_and_line_excess(
+    spectrum: PreparedSpectrum,
+    base: Optional[np.ndarray] = None,
+    ylines: Optional[np.ndarray] = None,
+):
+    """Return baseline and positive line excess for a prepared spectrum."""
+    if base is None:
+        base = base_calculator(spectrum.values)
+    else:
+        base = np.asarray(base, dtype=float)
+
+    if len(base) != len(spectrum.energy):
+        raise ValueError('base must have the same length as the spectrum.')
+
+    if ylines is None:
+        ylines = np.maximum(spectrum.values - base, 0)
+    else:
+        ylines = np.asarray(ylines, dtype=float)
+
+    if len(ylines) != len(spectrum.energy):
+        raise ValueError('ylines must have the same length as the spectrum.')
+
+    return base, ylines
+
+
+def _safe_divide(numerator, denominator):
+    """Return numerator / denominator, using NaN where the ratio is undefined."""
+    numerator = np.asarray(numerator, dtype=float)
+    denominator = np.asarray(denominator, dtype=float)
+    out = np.full_like(numerator, np.nan, dtype=float)
+    valid = np.isfinite(numerator) & np.isfinite(denominator) & (denominator != 0)
+    np.divide(numerator, denominator, out=out, where=valid)
+    return out
+
+
+def _snr_confidence_mask(
+    lines: pd.DataFrame,
+    threshold: float,
+    *,
+    columns=('snr_peak', 'snr_area', 'snr_amplitude'),
+) -> pd.Series:
+    """Return rows where any available S/N diagnostic exceeds ``threshold``."""
+    if len(lines) == 0:
+        return pd.Series([], index=lines.index, dtype=bool)
+
+    high_snr = pd.Series(False, index=lines.index, dtype=bool)
+    for col in columns:
+        if col in lines.columns:
+            high_snr |= pd.to_numeric(lines[col], errors='coerce') >= threshold
+    return high_snr
+
+
+def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
+    """Add pre-global-fit diagnostics to candidate lines.
+
+    The equivalent width reported here is an approximate candidate EW, computed
+    from the local Gaussian area divided by the empirical baseline at the line
+    centroid. If the spectral coordinate is in keV, the returned EW is in eV.
+    The global-fit EW is recomputed later from the final multi-Gaussian model.
+    """
+    lines = lines.copy()
+
+    if len(lines) == 0:
+        for col in ['snr_peak', 'snr_amplitude', 'area', 'earea', 'snr_area', 'ew']:
+            if col not in lines.columns:
+                lines[col] = []
+        return lines
+
+    numeric_cols = [
+        'amplitude', 'eamplitude', 'sigma', 'esigma',
+        'noise_on_block', 'base_on_line'
+    ]
+    for col in numeric_cols:
+        if col in lines.columns:
+            lines[col] = pd.to_numeric(lines[col], errors='coerce')
+        else:
+            lines[col] = np.nan
+
+    k = np.sqrt(2.0 * np.pi)
+
+    lines['snr_peak'] = _safe_divide(lines['amplitude'], lines['noise_on_block'])
+    lines['snr_amplitude'] = _safe_divide(lines['amplitude'], lines['eamplitude'])
+
+    lines['area'] = lines['amplitude'] * lines['sigma'] * k
+    lines['earea'] = np.sqrt(
+        (lines['sigma'] * k * lines['eamplitude']) ** 2
+        +
+        (lines['amplitude'] * k * lines['esigma']) ** 2
+    )
+    lines['snr_area'] = _safe_divide(lines['area'], lines['earea'])
+
+    # Approximate candidate equivalent width. Assumes energy in keV, hence x1000 -> eV.
+    lines['ew'] = _safe_divide(lines['area'], lines['base_on_line']) * 1000.0
+
+    return lines.replace([np.inf, -np.inf], np.nan)
+
+
+def _ensure_line_context(
+    clean_lines: pd.DataFrame,
+    spectrum: PreparedSpectrum,
+    base: np.ndarray,
+    *,
+    snr_confidence_threshold: float = 4.0,
+) -> pd.DataFrame:
+    """Ensure that user-filtered candidate tables contain final-fit context columns."""
+    clean_lines = clean_lines.copy().reset_index(drop=True)
+
+    if len(clean_lines) == 0:
+        for col in CANDIDATE_COLUMNS:
+            if col not in clean_lines.columns:
+                clean_lines[col] = []
+        return clean_lines
+
+    required_for_fit = {'amplitude', 'center', 'sigma'}
+    missing_for_fit = sorted(required_for_fit - set(clean_lines.columns))
+    if missing_for_fit:
+        raise ValueError(
+            'pd_lines must contain amplitude, center, and sigma columns. '
+            f'Missing: {missing_for_fit}'
+        )
+
+    nearest_positions = [
+        int(np.argmin(np.abs(spectrum.energy - center)))
+        for center in clean_lines['center'].to_numpy(dtype=float)
+    ]
+
+    if 'base_on_line' not in clean_lines.columns:
+        clean_lines['base_on_line'] = [base[pos] for pos in nearest_positions]
+    if 'value_on_line' not in clean_lines.columns:
+        clean_lines['value_on_line'] = [spectrum.values[pos] for pos in nearest_positions]
+    if 'noise_on_block' not in clean_lines.columns:
+        clean_lines['noise_on_block'] = [spectrum.uncertainties[pos] for pos in nearest_positions]
+    if 'relative_power' not in clean_lines.columns:
+        denom = clean_lines['value_on_line'] + clean_lines['base_on_line']
+        clean_lines['relative_power'] = np.where(
+            denom != 0,
+            (clean_lines['value_on_line'] - clean_lines['base_on_line']) / denom,
+            np.nan,
+        )
+    # Recompute local candidate diagnostics if the user passed a minimal
+    # table without the convenience S/N columns. The global fit will later
+    # overwrite the fit-dependent quantities using the final covariance.
+    if (
+        'snr_peak' not in clean_lines.columns
+        or 'snr_area' not in clean_lines.columns
+        or 'snr_amplitude' not in clean_lines.columns
+    ):
+        clean_lines = _add_candidate_metrics(clean_lines)
+
+    if 'cluster_probability' not in clean_lines.columns:
+        clean_lines['cluster_probability'] = np.nan
+
+    high_snr = _snr_confidence_mask(clean_lines, snr_confidence_threshold)
+    clean_lines.loc[high_snr, 'cluster_probability'] = 1.0
+
+    for col in CANDIDATE_COLUMNS:
+        if col not in clean_lines.columns:
+            clean_lines[col] = np.nan
+
+    return clean_lines
+
+
+def final_fit_and_metrics(
+    spectrum: PreparedSpectrum,
+    clean_lines: pd.DataFrame,
+    base: Optional[np.ndarray] = None,
+    ylines: Optional[np.ndarray] = None,
+    *,
+    final_fit_maxfev: int = 100000,
+    snr_confidence_threshold: float = 4.0,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Refit selected candidates and compute final line diagnostics.
+
+    This is the expensive global step. It is intentionally independent from the
+    candidate-search step, so users can filter ``clean_lines`` before running the
+    multi-Gaussian fit.
+
+    Parameters
+    ----------
+    spectrum : PreparedSpectrum
+        Sorted spectrum used for the final fit.
+    clean_lines : pandas.DataFrame
+        User-filtered candidate lines. At minimum it must contain ``amplitude``,
+        ``center``, and ``sigma``. If local context columns are missing, they are
+        estimated from the nearest spectral bin.
+    base : numpy.ndarray or None, default: None
+        Empirical baseline evaluated on ``spectrum.energy``. If omitted, it is
+        recomputed from ``spectrum.values``.
+    ylines : numpy.ndarray or None, default: None
+        Baseline-subtracted spectrum fitted with the multi-Gaussian model. If
+        omitted, it is recomputed as ``max(values - base, 0)``.
+    final_fit_maxfev : int, default: 100000
+        Maximum number of function evaluations allowed in the final ``curve_fit``.
+    snr_confidence_threshold : float, default: 4.0
+        S/N threshold above which ``cluster_probability`` is set to 1 if any of ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
+
+    Returns
+    -------
+    tuple
+        ``(result, yfit)`` where ``result`` is the final candidate DataFrame and
+        ``yfit`` is the fitted multi-Gaussian line model on the full spectrum grid.
+    """
+    base, ylines = _baseline_and_line_excess(spectrum, base=base, ylines=ylines)
+    clean_lines = _ensure_line_context(
+        clean_lines,
+        spectrum=spectrum,
+        base=base,
+        snr_confidence_threshold=snr_confidence_threshold,
+    )
+
+    fitted_final = pd.DataFrame(
+        columns=['amplitude', 'center', 'sigma', 'eamplitude', 'ecenter', 'esigma']
+    )
+    yfit = np.zeros_like(spectrum.energy, dtype=float)
+
+    if len(clean_lines) > 0:
+        p0, bounds = p0_generator_final(spectrum.energy, spectrum.values, clean_lines)
+        try:
+            popt, pcov = curve_fit(
+                n_gaussian,
+                spectrum.energy,
+                ylines,
+                p0=p0,
+                bounds=bounds,
+                maxfev=final_fit_maxfev,
+            )
+            errors = np.sqrt(np.diag(pcov))
+            yfit = n_gaussian(spectrum.energy, *popt)
+            popt_ = np.reshape(popt, (-1, 3))
+            errors_ = np.reshape(errors, (-1, 3))
+            for k in range(len(clean_lines)):
+                new_line = np.concatenate([popt_[k], errors_[k]])
+                fitted_final.loc[k] = new_line
+        except RuntimeError as exc:
+            print(f'Error final fitting: {exc}')
+        except ValueError as exc:
+            print(f'Error final fitting: {exc}')
+
+    clean_select = clean_lines[
+        ['relative_power', 'noise_on_block', 'value_on_line', 'base_on_line', 'cluster_probability']
+    ]
+    result = pd.concat([fitted_final, clean_select], axis=1)
+
+    if len(result) == 0:
+        return pd.DataFrame(columns=FINAL_OUTPUT_COLUMNS), yfit
+
+    cols = ['amplitude', 'sigma', 'eamplitude', 'esigma']
+    result[cols] = result[cols].apply(pd.to_numeric, errors='coerce')
+    result['noise_on_block'] = pd.to_numeric(result['noise_on_block'], errors='coerce')
+    result['snr_peak'] = _safe_divide(result['amplitude'], result['noise_on_block'])
+    result['snr_amplitude'] = _safe_divide(result['amplitude'], result['eamplitude'])
+
+    k = np.sqrt(2.0 * np.pi)
+    result['area'] = result['amplitude'] * result['sigma'] * k
+    result['earea'] = np.sqrt(
+        (result['sigma'] * k * result['eamplitude']) ** 2
+        +
+        (result['amplitude'] * k * result['esigma']) ** 2
+    )
+    result['snr_area'] = _safe_divide(result['area'], result['earea'])
+
+    ew_vals = []
+    for row in result.itertuples(index=False):
+        center = float(row.center)
+        sigma = float(row.sigma)
+        mask = (spectrum.energy >= center - 2.0 * sigma) & (spectrum.energy <= center + 2.0 * sigma)
+        valid_mask = mask & np.isfinite(base) & (base != 0)
+        if np.any(valid_mask):
+            ew = np.sum(yfit[valid_mask] / base[valid_mask] * spectrum.bin_width[valid_mask]) * 1000.0
+        else:
+            ew = np.nan
+        ew_vals.append(ew)
+
+    result['ew'] = ew_vals
+    result = result[FINAL_OUTPUT_COLUMNS]
+    high_snr = _snr_confidence_mask(result, snr_confidence_threshold)
+    result.loc[high_snr, 'cluster_probability'] = 1.0
+    return result, yfit
+
+
+def plot_global_fit(
+    spectrum: PreparedSpectrum,
+    base: np.ndarray,
+    yfit: np.ndarray,
+    output_path: str | Path | None = None,
+    *,
+    show_plot: bool = True,
+) -> None:
+    """Plot the spectrum, empirical baseline, and global line model."""
+    plt.figure()
+    plt.errorbar(
+        spectrum.energy,
+        spectrum.values,
+        yerr=spectrum.uncertainties,
+        label='Data',
+        alpha=0.2,
+    )
+    plt.plot(spectrum.energy, base, 'k:', label='base')
+    plt.plot(spectrum.energy, yfit, 'g:', label='Lines')
+    plt.plot(spectrum.energy, yfit + base, 'r', label='Line+base')
+    plt.xlabel('Energy (keV)')
+    plt.ylabel('Spectra')
+    plt.legend()
+    plt.tight_layout()
+    if output_path is not None:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    if show_plot:
+        plt.show()
+    else:
+        plt.close()
+
+
+def fit_global(
+    pd_lines: pd.DataFrame,
+    spectra_or_energy,
+    y=None,
+    sy=None,
+    *,
+    bin_width=None,
+    base: Optional[np.ndarray] = None,
+    ylines: Optional[np.ndarray] = None,
+    show_plot: bool = True,
+    output_dir=None,
+    plot_name: str = 'bliss_global_fit.png',
+    save_csv: bool = True,
+    final_fit_maxfev: int = 100000,
+    snr_confidence_threshold: float = 4.0,
+    return_yfit: bool = False,
+):
+    """Run only the expensive global fit on user-filtered candidate lines.
+
+    Parameters
+    ----------
+    pd_lines : pandas.DataFrame
+        Candidate-line table after any user-defined filtering.
+    spectra_or_energy : str, pathlib.Path, Spectrum-like object, or array-like
+        Same spectrum input accepted by the main BLiSS pipeline.
+    y, sy : array-like or None, default: None
+        Spectral values and uncertainties for direct array input.
+    bin_width : array-like or None, default: None
+        Optional bin widths for direct array input.
+    base, ylines : numpy.ndarray or None, default: None
+        Optional precomputed baseline and baseline-subtracted excess spectrum.
+    show_plot : bool, default: True
+        Display the final diagnostic plot.
+    output_dir : str, pathlib.Path, or None, default: None
+        If provided, save ``global_fit_lines.csv`` and the diagnostic plot there.
+    plot_name : str, default: "bliss_global_fit.png"
+        Diagnostic plot filename inside ``output_dir``.
+    save_csv : bool, default: True
+        Save the fitted line table when ``output_dir`` is provided.
+    final_fit_maxfev : int, default: 100000
+        Maximum number of function evaluations in ``curve_fit``.
+    snr_confidence_threshold : float, default: 4.0
+        S/N threshold above which ``cluster_probability`` is set to 1 if any of ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
+    return_yfit : bool, default: False
+        If true, return ``(result, yfit)`` instead of only ``result``.
+
+    Returns
+    -------
+    pandas.DataFrame or tuple
+        Final fitted line table, optionally with the fitted line-only model.
+    """
+    spectrum = prepare_spectrum(spectra_or_energy, y=y, sy=sy, bin_width=bin_width)
+    base, ylines = _baseline_and_line_excess(spectrum, base=base, ylines=ylines)
+
+    result, yfit = final_fit_and_metrics(
+        spectrum=spectrum,
+        clean_lines=pd_lines,
+        base=base,
+        ylines=ylines,
+        final_fit_maxfev=final_fit_maxfev,
+        snr_confidence_threshold=snr_confidence_threshold,
+    )
+
+    output_path = None
+    if output_dir is not None:
+        output_dir = ensure_output_folder(output_dir)
+        output_path = output_dir / plot_name
+        if save_csv:
+            result.to_csv(output_dir / 'global_fit_lines.csv', index=False)
+
+    if show_plot or output_path is not None:
+        plot_global_fit(spectrum=spectrum, base=base, yfit=yfit, output_path=output_path, show_plot=show_plot)
+
+    if return_yfit:
+        return result, yfit
+    return result
+
+
+class BlindLineSearchPipeline:
+    """Run the blind emission-line search on one spectrum.
+
+    By default, the pipeline now stops after candidate detection and probability
+    estimation. The expensive global multi-Gaussian fit can be run later with
+    ``fit_global`` after the user filters the candidate table.
     """
 
-    def __init__(self, config: Optional[BlindLineSearchConfig]=None):
-        """Create a pipeline instance.
-
-        Parameters
-        ----------
-        config : BlindLineSearchConfig or None, default: None
-            Pipeline configuration. When omitted, the default BLiSS search limits and
-            fitting settings are used.
-        """
+    def __init__(self, config: Optional[BlindLineSearchConfig] = None):
+        """Create a pipeline instance."""
         self.config = config or BlindLineSearchConfig()
 
-    def run(self, spectra_or_energy, y=None, sy=None, *, en1: Optional[float]=None, en2: Optional[float]=None, show_plot: bool=False, output_dir=None, plot_name: str='bliss_fit.png') -> pd.DataFrame:
-        """Execute the BLiSS line-search workflow.
+    def run(
+        self,
+        spectra_or_energy,
+        y=None,
+        sy=None,
+        *,
+        en1: Optional[float] = None,
+        en2: Optional[float] = None,
+        final_fit: bool = False,
+        show_plot: bool = False,
+        output_dir=None,
+        plot_name: str = 'bliss_fit.png',
+    ) -> pd.DataFrame:
+        """Execute the BLiSS workflow.
 
-        Parameters
-        ----------
-        spectra_or_energy : str, pathlib.Path, or array-like
-            Either a four-column text spectrum file or the coordinate array for direct
-            array input.
-        y : array-like or None, default: None
-            Observed spectral values. Required when ``spectra_or_energy`` is an array.
-        sy : array-like or None, default: None
-            One-sigma uncertainties on ``y``. Required when ``spectra_or_energy`` is an
-            array.
-        en1 : float or None, default: None
-            Lower energy bound for accepted candidates. If omitted, the value from the
-            pipeline configuration is used.
-        en2 : float or None, default: None
-            Upper energy bound for accepted candidates. If omitted, the value from the
-            pipeline configuration is used.
-        show_plot : bool, default: False
-            Save and display the final diagnostic plot when true.
-        output_dir : str, pathlib.Path, or None, default: None
-            Folder used for ``candidate_lines.csv`` and ``run_summary.txt``. If omitted,
-            a timestamped results folder is created.
-        plot_name : str, default: "bliss_fit.png"
-            Filename for the diagnostic plot inside ``output_dir``.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Final BLiSS candidate table with fitted parameters, uncertainties,
-            signal-to-noise ratio, equivalent width, and cluster probability.
+        When ``final_fit=False`` the function returns the probability-ranked
+        candidate-line table before the expensive global fit. When
+        ``final_fit=True`` it preserves the previous behaviour and returns the
+        globally fitted final table.
         """
         output_dir = ensure_output_folder(output_dir)
         spectrum = self._load_input(spectra_or_energy, y, sy)
         base = base_calculator(spectrum.values)
         ylines = np.maximum(spectrum.values - base, 0)
-        raw_candidates = return_raw_lines(spectrum.energy, spectrum.values, spectrum.uncertainties, ylines, base)
-        simx, simy, simsy = calculate_synthetic_lines_spectra(spectrum.energy, ylines, spectrum.uncertainties, self.config.num_synthetic_simulations)
+
+        raw_candidates = return_raw_lines(
+            spectrum.energy,
+            spectrum.values,
+            spectrum.uncertainties,
+            ylines,
+            base,
+        )
+        simx, simy, simsy = calculate_synthetic_lines_spectra(
+            spectrum.energy,
+            ylines,
+            spectrum.uncertainties,
+            self.config.num_synthetic_simulations,
+        )
         synthetic_candidates = return_raw_lines(simx, simy, simsy, simy, np.zeros(len(simx)))
-        candidates = eval_line_probability_gmm(raw_candidates, synthetic_candidates, simx=simx, x=spectrum.energy)
-        selected = self._select_candidates(candidates, en1=self.config.en1 if en1 is None else en1, en2=self.config.en2 if en2 is None else en2)
-        result, yfit = self._final_fit_and_metrics(spectrum=spectrum, base=base, ylines=ylines, clean_lines=selected)
+        candidates = eval_line_probability_gmm(
+            raw_candidates,
+            synthetic_candidates,
+            simx=simx,
+            x=spectrum.energy,
+        )
+        selected = self._select_candidates(
+            candidates,
+            en1=self.config.en1 if en1 is None else en1,
+            en2=self.config.en2 if en2 is None else en2,
+        )
+
+        if not final_fit:
+            self._write_candidate_outputs(selected, output_dir)
+            return selected
+
+        result, yfit = final_fit_and_metrics(
+            spectrum=spectrum,
+            base=base,
+            ylines=ylines,
+            clean_lines=selected,
+            final_fit_maxfev=self.config.final_fit_maxfev,
+            snr_confidence_threshold=self.config.snr_confidence_threshold,
+        )
         if show_plot:
-            self._plot_final_fit(spectrum=spectrum, base=base, yfit=yfit, output_path=output_dir / plot_name)
+            plot_global_fit(
+                spectrum=spectrum,
+                base=base,
+                yfit=yfit,
+                output_path=output_dir / plot_name,
+                show_plot=True,
+            )
         self._write_outputs(result, output_dir)
         return result
 
     def _load_input(self, spectra_or_energy, y=None, sy=None) -> PreparedSpectrum:
-        """Load and sort spectrum data from a file or direct arrays.
-
-        Parameters
-        ----------
-        spectra_or_energy : str, pathlib.Path, or array-like
-            Four-column file with ``E_low, E_high, value, uncertainty`` columns, or an
-            array of coordinate values.
-        y : array-like or None, default: None
-            Spectral values for direct array input.
-        sy : array-like or None, default: None
-            One-sigma uncertainties for direct array input.
-
-        Returns
-        -------
-        PreparedSpectrum
-            Spectrum sorted by increasing coordinate value.
-        """
-        if isinstance(spectra_or_energy, (str, Path)):
-            spectra = pd.read_csv(spectra_or_energy, sep='\\s+', comment='#', header=None, engine='python')
-            if spectra.shape[1] != 4:
-                raise ValueError('File must have 4 columns: E_low, E_high, counts, error.')
-            x = np.asarray((spectra[0] + spectra[1]) / 2.0)
-            dE = np.asarray(spectra[1] - spectra[0])
-            y = np.asarray(spectra[2])
-            sy = np.asarray(spectra[3])
-        else:
-            x = np.asarray(spectra_or_energy)
-            if y is None or sy is None:
-                raise ValueError('If using direct arrays, y and sy must be provided.')
-            y = np.asarray(y)
-            sy = np.asarray(sy)
-            dE = np.diff(x)
-            dE = np.append(dE, dE[-1])
-        order = np.argsort(x)
-        return PreparedSpectrum(energy=x[order], values=y[order], uncertainties=sy[order], bin_width=np.asarray(dE)[order])
+        """Load and sort spectrum data from a file or direct arrays."""
+        return prepare_spectrum(spectra_or_energy, y=y, sy=sy)
 
     def _select_candidates(self, candidates: pd.DataFrame, *, en1: float, en2: float) -> pd.DataFrame:
-        """Restrict candidate lines to the requested energy interval.
+        """Restrict candidate lines to the requested energy interval."""
+        clean_lines = candidates.copy()
+        clean_lines = clean_lines[
+            (clean_lines.center >= en1) & (clean_lines.center <= en2)
+        ].reset_index(drop=True)
+        clean_lines = _add_candidate_metrics(clean_lines)
 
-        Parameters
-        ----------
-        candidates : pandas.DataFrame
-            Candidate table produced by probability evaluation.
-        en1, en2 : float
-            Inclusive lower and upper energy bounds applied to the ``center`` column.
+        # Before the optional expensive global fit, force very significant
+        # candidates to probability 1 if any S/N diagnostic is high. This
+        # makes the returned clean_lines table consistent with the final-fit output.
+        if 'cluster_probability' not in clean_lines.columns:
+            clean_lines['cluster_probability'] = np.nan
+        high_snr = _snr_confidence_mask(clean_lines, self.config.snr_confidence_threshold)
+        clean_lines.loc[high_snr, 'cluster_probability'] = 1.0
 
-        Returns
-        -------
-        pandas.DataFrame
-            Candidate table restricted to the expected BLiSS output columns.
-        """
-        clean_lines = candidates
-        clean_lines = clean_lines[(clean_lines.center >= en1) & (clean_lines.center <= en2)].reset_index(drop=True)
+        for col in CANDIDATE_COLUMNS:
+            if col not in clean_lines.columns:
+                clean_lines[col] = np.nan
+
         clean_lines = clean_lines[CANDIDATE_COLUMNS]
         return clean_lines
 
-    def _final_fit_and_metrics(self, spectrum: PreparedSpectrum, base: np.ndarray, ylines: np.ndarray, clean_lines: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
-        """Refit selected candidates and compute final line diagnostics.
+    def _final_fit_and_metrics(
+        self,
+        spectrum: PreparedSpectrum,
+        base: np.ndarray,
+        ylines: np.ndarray,
+        clean_lines: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, np.ndarray]:
+        """Backward-compatible wrapper around the standalone final-fit function."""
+        return final_fit_and_metrics(
+            spectrum=spectrum,
+            clean_lines=clean_lines,
+            base=base,
+            ylines=ylines,
+            final_fit_maxfev=self.config.final_fit_maxfev,
+            snr_confidence_threshold=self.config.snr_confidence_threshold,
+        )
 
-        Parameters
-        ----------
-        spectrum : PreparedSpectrum
-            Sorted spectrum used for the final fit.
-        base : numpy.ndarray
-            Empirical baseline evaluated on ``spectrum.energy``.
-        ylines : numpy.ndarray
-            Baseline-subtracted spectrum fitted with the multi-Gaussian model.
-        clean_lines : pandas.DataFrame
-            Candidate lines selected after probability filtering and energy clipping.
+    def _plot_final_fit(
+        self,
+        spectrum: PreparedSpectrum,
+        base: np.ndarray,
+        yfit: np.ndarray,
+        output_path: str | Path,
+    ) -> None:
+        """Backward-compatible wrapper around the standalone plotting function."""
+        plot_global_fit(
+            spectrum=spectrum,
+            base=base,
+            yfit=yfit,
+            output_path=output_path,
+            show_plot=True,
+        )
 
-        Returns
-        -------
-        tuple
-            ``(result, yfit)`` where ``result`` is the final candidate DataFrame and
-            ``yfit`` is the fitted multi-Gaussian line model on the full spectrum grid.
-        """
-        fitted_final = pd.DataFrame(columns=['amplitude', 'center', 'sigma', 'eamplitude', 'ecenter', 'esigma'])
-        yfit = np.zeros_like(spectrum.energy, dtype=float)
-        if len(clean_lines) > 0:
-            p0, bounds = p0_generator_final(spectrum.energy, spectrum.values, clean_lines)
-            try:
-                popt, pcov = curve_fit(n_gaussian, spectrum.energy, ylines, p0=p0, bounds=bounds, maxfev=self.config.final_fit_maxfev)
-                errors = np.sqrt(np.diag(pcov))
-                yfit = n_gaussian(spectrum.energy, *popt)
-                popt_ = np.reshape(popt, (-1, 3))
-                errors_ = np.reshape(errors, (-1, 3))
-                for k in range(len(clean_lines)):
-                    new_line = np.concatenate([popt_[k], errors_[k]])
-                    fitted_final.loc[k] = new_line
-            except RuntimeError as exc:
-                print(f'Error final fitting: {exc}')
-            except ValueError as exc:
-                print(f'Error final fitting: {exc}')
-        clean_select = clean_lines[['relative_power', 'noise_on_block', 'value_on_line', 'base_on_line', 'cluster_probability']]
-        result = pd.concat([fitted_final, clean_select], axis=1)
-        if len(result) == 0:
-            return (pd.DataFrame(columns=FINAL_OUTPUT_COLUMNS), yfit)
-        cols = ['amplitude', 'sigma', 'eamplitude', 'esigma']
-        result[cols] = result[cols].apply(pd.to_numeric, errors='coerce')
-        result['snr_peak'] = result.amplitude / result.noise_on_block
-        k = np.sqrt(2.0 * np.pi)
-        result['area'] = result['amplitude'] * result['sigma'] * k
-        result['earea'] = np.sqrt((result['sigma'] * k * result['eamplitude']) ** 2 + (result['amplitude'] * k * result['esigma']) ** 2)
-        result['snr_area'] = result.area / result.earea
-        ew_vals = []
-        for row in result.itertuples(index=False):
-            center = float(row.center)
-            sigma = float(row.sigma)
-            mask = (spectrum.energy >= center - 2.0 * sigma) & (spectrum.energy <= center + 2.0 * sigma)
-            if np.any(mask):
-                ew = np.sum(yfit[mask] / base[mask] * spectrum.bin_width[mask]) * 1000.0
-            else:
-                ew = np.nan
-            ew_vals.append(ew)
-        result['ew'] = ew_vals
-        result = result[FINAL_OUTPUT_COLUMNS]
-        result.loc[result.snr_peak >= self.config.snr_confidence_threshold, 'cluster_probability'] = 1
-        return (result, yfit)
-
-    def _plot_final_fit(self, spectrum: PreparedSpectrum, base: np.ndarray, yfit: np.ndarray, output_path: str | Path) -> None:
-        """Save the final spectrum, baseline, and line-model diagnostic plot.
-
-        Parameters
-        ----------
-        spectrum : PreparedSpectrum
-            Spectrum plotted with uncertainty bars.
-        base : numpy.ndarray
-            Empirical baseline curve.
-        yfit : numpy.ndarray
-            Fitted line-only model.
-        output_path : str or pathlib.Path
-            Destination image path.
-        """
-        plt.figure()
-        plt.errorbar(spectrum.energy, spectrum.values, yerr=spectrum.uncertainties, label='Data', alpha=0.2)
-        plt.plot(spectrum.energy, base, 'k:', label='base')
-        plt.plot(spectrum.energy, yfit, 'g:', label='Lines')
-        plt.plot(spectrum.energy, yfit + base, 'r', label='Line+base')
-        plt.xlabel('Energy (keV)')
-        plt.ylabel('Spectra')
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        plt.show()
+    def _write_candidate_outputs(self, candidates: pd.DataFrame, output_dir: Path) -> None:
+        """Write the pre-global-fit candidate table and run summary."""
+        candidates.to_csv(output_dir / 'candidate_lines.csv', index=False)
+        with open(output_dir / 'run_summary.txt', 'w') as handle:
+            handle.write('BLiSS candidate search completed\n')
+            handle.write(f'Results folder: {output_dir}\n')
+            handle.write(f'Number of candidate lines before global fit: {len(candidates)}\n')
+            handle.write('Run fit_global(candidate_lines, spectrum) after user filtering to perform the global fit.\n')
 
     def _write_outputs(self, result: pd.DataFrame, output_dir: Path) -> None:
-        """Write the final candidate table and run summary.
-
-        Parameters
-        ----------
-        result : pandas.DataFrame
-            Final BLiSS candidate table.
-        output_dir : pathlib.Path
-            Directory where ``candidate_lines.csv`` and ``run_summary.txt`` are saved.
-        """
-        result.to_csv(output_dir / 'candidate_lines.csv', index=False)
+        """Write the final candidate table and run summary."""
+        result.to_csv(output_dir / 'candidate_lines_global_fit.csv', index=False)
         with open(output_dir / 'run_summary.txt', 'w') as handle:
-            handle.write('BLiSS run completed\n')
+            handle.write('BLiSS run completed with global fit\n')
             handle.write(f'Results folder: {output_dir}\n')
-            handle.write(f'Number of detected candidates: {len(result)}\n')
+            handle.write(f'Number of fitted candidates: {len(result)}\n')
 
-def find_emission_lines(spectra_or_energy, y=None, sy=None, en1=0, en2=10, show_plot=False, output_dir=None, plot_name='bliss_fit.png'):
+
+def find_candidate_lines(
+    spectra_or_energy,
+    y=None,
+    sy=None,
+    en1=0,
+    en2=10,
+    output_dir=None,
+):
+    """Run BLiSS only up to candidate detection/probability estimation."""
+    config = BlindLineSearchConfig(en1=en1, en2=en2)
+    pipeline = BlindLineSearchPipeline(config=config)
+    return pipeline.run(
+        spectra_or_energy,
+        y=y,
+        sy=sy,
+        final_fit=False,
+        output_dir=output_dir,
+    )
+
+
+def find_emission_lines(
+    spectra_or_energy,
+    y=None,
+    sy=None,
+    en1=0,
+    en2=10,
+    show_plot=False,
+    output_dir=None,
+    plot_name='bliss_fit.png',
+    *,
+    final_fit: bool = False,
+):
     """Run the default BLiSS emission-line search.
 
-    Parameters
-    ----------
-    spectra_or_energy : str, pathlib.Path, or array-like
-        Four-column spectrum file or coordinate array.
-    y : array-like or None, default: None
-        Spectral values for direct array input.
-    sy : array-like or None, default: None
-        One-sigma uncertainties for direct array input.
-    en1, en2 : float, default: 0, 10
-        Inclusive energy interval used to keep final candidates.
-    show_plot : bool, default: False
-        Save and display the final diagnostic plot when true.
-    output_dir : str, pathlib.Path, or None, default: None
-        Output folder for BLiSS result files.
-    plot_name : str, default: "bliss_fit.png"
-        Diagnostic plot filename.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Final candidate-line table returned by ``BlindLineSearchPipeline.run``.
+    By default this now returns candidate lines before the expensive global fit.
+    Use ``final_fit=True`` to preserve the old one-step behaviour, or call
+    ``fit_global`` later on a user-filtered candidate table.
     """
     config = BlindLineSearchConfig(en1=en1, en2=en2)
     pipeline = BlindLineSearchPipeline(config=config)
-    return pipeline.run(spectra_or_energy, y=y, sy=sy, show_plot=show_plot, output_dir=output_dir, plot_name=plot_name)
+    return pipeline.run(
+        spectra_or_energy,
+        y=y,
+        sy=sy,
+        final_fit=final_fit,
+        show_plot=show_plot,
+        output_dir=output_dir,
+        plot_name=plot_name,
+    )

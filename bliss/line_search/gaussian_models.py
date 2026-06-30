@@ -113,5 +113,5 @@ def p0_generator_final(x, y, clean_lines):
         bound_low.append(0)
         bound_high.append(clean_lines.amplitude.loc[i] * 10)
         bound_high.append(clean_lines.center.loc[i] + 0.1)
-        bound_high.append(clean_lines.sigma.loc[i] + 0.1)
+        bound_high.append(clean_lines.sigma.loc[i] + 0.01)
     return (p0, (bound_low, bound_high))
