@@ -112,6 +112,20 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         Rows corresponding to real candidates only, with ``gmm_label`` and
         ``cluster_probability`` columns added.
     """
+
+    lines = lines.copy()
+    simlines = simlines.copy()
+
+    if len(lines) == 0:
+        lines["gmm_label"] = []
+        lines["cluster_probability"] = []
+        return lines.reset_index(drop=True)
+
+    if len(simlines) == 0:
+        lines["gmm_label"] = np.nan
+        lines["cluster_probability"] = 1.0
+        return lines.reset_index(drop=True)
+
     lines['real'] = 1
     simlines['real'] = 0
     lines_sim_real = pd.concat([lines, simlines])
@@ -191,26 +205,27 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         plt.tight_layout()
         plt.show()
     cluster_labels = best_model.predict(X)
-    lines_sim_real['gmm_label'] = cluster_labels
+    lines_sim_real["gmm_label"] = cluster_labels
     lines_sim_real = lines_sim_real.reset_index(drop=True)
-    cluster_labels = best_model.predict(X)
-    lines_sim_real['gmm_label'] = cluster_labels
-    lines_sim_real = lines_sim_real.reset_index(drop=True)
-    cluster_contains_sim, cluster_contains_real = ([], [])
-    for i in range(max(cluster_labels)):
-        simnumber = len(simlines)
-        realnumber = len(lines)
-        sim_group = lines_sim_real[(lines_sim_real.gmm_label == i) & (lines_sim_real.real == 0)]
-        real_group = lines_sim_real[(lines_sim_real.gmm_label == i) & (lines_sim_real.real == 1)]
-        cluster_contains_sim.append(len(sim_group) / simnumber)
-        cluster_contains_real.append(len(real_group) / realnumber)
-    idx_desc = np.argsort(cluster_contains_sim)[::-1]
-    idx_desc_loop = idx_desc
+    cluster_ids = np.unique(cluster_labels)
+    cluster_contains_sim, cluster_contains_real = [], []
+    simnumber = len(simlines)
+    realnumber = len(lines)
+    for i in cluster_ids:
+        sim_group = lines_sim_real[
+            (lines_sim_real.gmm_label == i) & (lines_sim_real.real == 0)
+        ]
+        real_group = lines_sim_real[
+            (lines_sim_real.gmm_label == i) & (lines_sim_real.real == 1)
+        ]
+        cluster_contains_sim.append(len(sim_group) / simnumber if simnumber > 0 else 0.0)
+        cluster_contains_real.append(len(real_group) / realnumber if realnumber > 0 else 0.0)
+    idx_desc_loop = cluster_ids[np.argsort(cluster_contains_sim)[::-1]]
     filtered_lines_sim_real = lines_sim_real
     real_group = filtered_lines_sim_real[filtered_lines_sim_real.real == 1]
     sim_group = filtered_lines_sim_real[filtered_lines_sim_real.real == 0]
-    real_rate = len(real_group)
-    sim_rate = len(sim_group) / 10
+    real_rate = len(real_group) / (max(x) - min(x))
+    sim_rate = len(sim_group) / (max(simx) - min(simx))
     cluster_probability = np.round(real_probability(real_rate, sim_rate), 2)
     lines_sim_real['cluster_probability'] = cluster_probability
     lines_real = lines_sim_real[lines_sim_real.real == 1]

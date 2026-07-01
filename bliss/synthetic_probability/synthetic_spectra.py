@@ -15,7 +15,7 @@ class SyntheticSpectrumGenerator:
         before shuffling.
     """
 
-    def __init__(self, num_simulations=2, seed=None, z_score_th=4):
+    def __init__(self, num_simulations=10, seed=None, z_score_th=4):
         """Create a synthetic-spectrum generator.
 
         Parameters
@@ -108,3 +108,84 @@ def calculate_synthetic_lines_spectra(t, c, sc, num_simulations, seed=None, z_sc
         simc[start:end] = resid[perm]
         ssimc[start:end] = sc[perm]
     return (tsim, simc, ssimc)
+
+
+def calculate_synthetic_noise_spectra(
+    t,
+    y,
+    sy,
+    base,
+    num_simulations,
+    seed=None,
+    noise_model="gaussian",
+):
+    """Create concatenated baseline-aware null spectra.
+
+    Returns
+    -------
+    simx, simy, simsy, simbase, simylines
+        Concatenated arrays for all simulations.
+    """
+
+    rng = np.random.default_rng(seed)
+
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    sy = np.asarray(sy, dtype=float)
+    base = np.asarray(base, dtype=float)
+
+    if not (len(t) == len(y) == len(sy) == len(base)):
+        raise ValueError("t, y, sy, and base must have the same length.")
+
+    n = len(t)
+    num_simulations = int(num_simulations)
+
+    if n == 0 or num_simulations <= 0:
+        empty = np.array([], dtype=float)
+        return empty, empty, empty, empty, empty
+
+    if n > 1:
+        dx = np.nanmedian(np.diff(t))
+        if not np.isfinite(dx) or dx <= 0:
+            dx = 1.0
+
+        span = np.nanmax(t) - np.nanmin(t)
+        if not np.isfinite(span) or span <= 0:
+            span = n * dx
+    else:
+        dx = 1.0
+        span = 1.0
+
+    # Gap between simulations so they do not overlap in simx.
+    offset_step = span + 5.0 * dx
+
+    simx = np.empty(n * num_simulations, dtype=float)
+    simy = np.empty(n * num_simulations, dtype=float)
+    simsy = np.empty(n * num_simulations, dtype=float)
+    simbase = np.empty(n * num_simulations, dtype=float)
+    simylines = np.empty(n * num_simulations, dtype=float)
+
+    if noise_model != "gaussian":
+        raise ValueError("For now use noise_model='gaussian'.")
+
+    for k in range(num_simulations):
+        start = k * n
+        end = start + n
+
+        noise = rng.normal(loc=0.0, scale=sy)
+
+        y_sim = base + noise
+        ylines_sim = np.maximum(y_sim - base, 0.0)
+
+        # Important: avoid joining candidate blocks between simulations.
+        if n > 1:
+            ylines_sim[0] = 0.0
+            ylines_sim[-1] = 0.0
+
+        simx[start:end] = t + k * offset_step
+        simy[start:end] = y_sim
+        simsy[start:end] = sy
+        simbase[start:end] = base
+        simylines[start:end] = ylines_sim
+
+    return simx, simy, simsy, simbase, simylines

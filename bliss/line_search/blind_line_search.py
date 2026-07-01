@@ -10,7 +10,7 @@ from scipy.optimize import curve_fit
 from .empirical_baseline import base_calculator
 from .candidate_regions import return_raw_lines
 from .gaussian_models import n_gaussian, p0_generator_final
-from ..synthetic_probability.synthetic_spectra import calculate_synthetic_lines_spectra
+from ..synthetic_probability.synthetic_spectra import calculate_synthetic_noise_spectra
 from ..synthetic_probability.gmm_probability import eval_line_probability_gmm
 from ..plotting.run_output_manager import ensure_output_folder
 
@@ -40,10 +40,11 @@ class BlindLineSearchConfig:
     snr_confidence_threshold : float
         Any available S/N diagnostic above which a candidate is assigned probability 1.
     """
-    en1: float = 0.0
+    en1: float = 0.2
     en2: float = 10.0
     energy_pad: float = 0.1
-    num_synthetic_simulations: int = 2
+    num_synthetic_simulations: int = 10
+    synthetic_seed: Optional[int] = None
     final_fit_maxfev: int = 100000
     snr_confidence_threshold: float = 4.0
 
@@ -660,19 +661,21 @@ class BlindLineSearchPipeline:
         # ------------------------------------------------------------
         # Synthetic residual spectra in the same padded interval
         # ------------------------------------------------------------
-        simx, simy, simsy = calculate_synthetic_lines_spectra(
+        simx, simy, simsy, simbase, simylines = calculate_synthetic_noise_spectra(
             spectrum.energy,
-            ylines,
+            spectrum.values,
             spectrum.uncertainties,
+            base,
             self.config.num_synthetic_simulations,
+            seed=self.config.synthetic_seed,
         )
 
         synthetic_candidates = return_raw_lines(
             simx,
             simy,
             simsy,
-            simy,
-            np.zeros(len(simx)),
+            simylines,
+            simbase,
         )
 
         candidates = eval_line_probability_gmm(
