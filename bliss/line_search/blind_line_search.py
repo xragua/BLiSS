@@ -42,6 +42,7 @@ class BlindLineSearchConfig:
     """
     en1: float = 0.0
     en2: float = 10.0
+    energy_pad: float = 0.1
     num_synthetic_simulations: int = 2
     final_fit_maxfev: int = 100000
     snr_confidence_threshold: float = 4.0
@@ -176,6 +177,23 @@ def _baseline_and_line_excess(
 
     return base, ylines
 
+def _slice_prepared_spectrum(
+    spectrum: PreparedSpectrum,
+    mask: np.ndarray,
+) -> PreparedSpectrum:
+    """Return a PreparedSpectrum restricted to a boolean mask."""
+
+    mask = np.asarray(mask, dtype=bool)
+
+    if len(mask) != len(spectrum.energy):
+        raise ValueError("mask must have the same length as the spectrum.")
+
+    return PreparedSpectrum(
+        energy=spectrum.energy[mask],
+        values=spectrum.values[mask],
+        uncertainties=spectrum.uncertainties[mask],
+        bin_width=spectrum.bin_width[mask],
+    )
 
 def _safe_divide(numerator, denominator):
     """Return numerator / denominator, using NaN where the ratio is undefined."""
@@ -562,23 +580,75 @@ class BlindLineSearchPipeline:
         *,
         en1: Optional[float] = None,
         en2: Optional[float] = None,
+        energy_pad: Optional[float] = None,
         final_fit: bool = False,
         show_plot: bool = False,
         output_dir=None,
         plot_name: str = 'bliss_fit.png',
     ) -> pd.DataFrame:
-        """Execute the BLiSS workflow.
-
-        When ``final_fit=False`` the function returns the probability-ranked
-        candidate-line table before the expensive global fit. When
-        ``final_fit=True`` it preserves the previous behaviour and returns the
-        globally fitted final table.
+        """Execute the BLiSS workflow.The empirical baseline is computed from the full input spectrum.
+        Candidate detection, local Gaussian fitting, probability estimation,
+        and the optional global fit are performed inside the selected energy
+        interval enlarged by ``energy_pad``. The returned catalogue is finally
+        restricted to the nominal ``en1``--``en2`` interval.
         """
-        output_dir = ensure_output_folder(output_dir)
-        spectrum = self._load_input(spectra_or_energy, y, sy)
-        base = base_calculator(spectrum.values)
-        ylines = np.maximum(spectrum.values - base, 0)
 
+        output_dir = ensure_output_folder(output_dir)
+
+        # ------------------------------------------------------------
+        # Load full spectrum
+        # ------------------------------------------------------------
+        spectrum_full = self._load_input(spectra_or_energy, y, sy)
+
+        # ------------------------------------------------------------
+        # Resolve nominal science window
+        # ------------------------------------------------------------
+        en1_use = self.config.en1 if en1 is None else en1
+        en2_use = self.config.en2 if en2 is None else en2
+
+        if en2_use <= en1_use:
+            raise ValueError(
+                f"Invalid energy range: en1={en1_use}, en2={en2_use}. "
+                "Require en2 > en1."
+            )
+
+        # ------------------------------------------------------------
+        # Resolve internal padding
+        # ------------------------------------------------------------
+        pad = self.config.energy_pad if energy_pad is None else energy_pad
+        pad = max(float(pad), 0.0)
+
+        fit_en1 = en1_use - pad
+        fit_en2 = en2_use + pad
+
+        fit_mask = (
+            (spectrum_full.energy >= fit_en1)
+            & (spectrum_full.energy <= fit_en2)
+        )
+
+        if not np.any(fit_mask):
+            raise ValueError(
+                f"No spectral bins found in the padded energy range: "
+                f"{fit_en1}--{fit_en2}."
+            )
+
+        # ------------------------------------------------------------
+        # Baseline from the full spectrum
+        # ------------------------------------------------------------
+        base_full = base_calculator(spectrum_full.values)
+        ylines_full = np.maximum(spectrum_full.values - base_full, 0)
+
+        # ------------------------------------------------------------
+        # Restrict search/fit arrays to padded interval
+        # ------------------------------------------------------------
+        spectrum = _slice_prepared_spectrum(spectrum_full, fit_mask)
+        base = base_full[fit_mask]
+        ylines = ylines_full[fit_mask]
+
+        # ------------------------------------------------------------
+        # Raw candidate detection and first local Gaussian fits
+        # inside the padded interval
+        # ------------------------------------------------------------
         raw_candidates = return_raw_lines(
             spectrum.energy,
             spectrum.values,
@@ -586,29 +656,49 @@ class BlindLineSearchPipeline:
             ylines,
             base,
         )
+
+        # ------------------------------------------------------------
+        # Synthetic residual spectra in the same padded interval
+        # ------------------------------------------------------------
         simx, simy, simsy = calculate_synthetic_lines_spectra(
             spectrum.energy,
             ylines,
             spectrum.uncertainties,
             self.config.num_synthetic_simulations,
         )
-        synthetic_candidates = return_raw_lines(simx, simy, simsy, simy, np.zeros(len(simx)))
+
+        synthetic_candidates = return_raw_lines(
+            simx,
+            simy,
+            simsy,
+            simy,
+            np.zeros(len(simx)),
+        )
+
         candidates = eval_line_probability_gmm(
             raw_candidates,
             synthetic_candidates,
             simx=simx,
             x=spectrum.energy,
         )
+
+        # ------------------------------------------------------------
+        # Final catalogue restricted to the nominal science window
+        # ------------------------------------------------------------
         selected = self._select_candidates(
             candidates,
-            en1=self.config.en1 if en1 is None else en1,
-            en2=self.config.en2 if en2 is None else en2,
+            en1=en1_use,
+            en2=en2_use,
         )
 
         if not final_fit:
             self._write_candidate_outputs(selected, output_dir)
             return selected
 
+        # ------------------------------------------------------------
+        # Optional global fit over the padded interval,
+        # but only for candidates whose centroids are inside en1--en2
+        # ------------------------------------------------------------
         result, yfit = final_fit_and_metrics(
             spectrum=spectrum,
             base=base,
@@ -617,6 +707,14 @@ class BlindLineSearchPipeline:
             final_fit_maxfev=self.config.final_fit_maxfev,
             snr_confidence_threshold=self.config.snr_confidence_threshold,
         )
+
+        # Safety: keep only nominal-window lines after final fitting too
+        result = self._select_candidates(
+            result,
+            en1=en1_use,
+            en2=en2_use,
+        )
+
         if show_plot:
             plot_global_fit(
                 spectrum=spectrum,
@@ -625,9 +723,9 @@ class BlindLineSearchPipeline:
                 output_path=output_dir / plot_name,
                 show_plot=True,
             )
+
         self._write_outputs(result, output_dir)
         return result
-
     def _load_input(self, spectra_or_energy, y=None, sy=None) -> PreparedSpectrum:
         """Load and sort spectrum data from a file or direct arrays."""
         return prepare_spectrum(spectra_or_energy, y=y, sy=sy)
@@ -712,10 +810,15 @@ def find_candidate_lines(
     sy=None,
     en1=0,
     en2=10,
+    energy_pad=0.0,
     output_dir=None,
 ):
     """Run BLiSS only up to candidate detection/probability estimation."""
-    config = BlindLineSearchConfig(en1=en1, en2=en2)
+    config = BlindLineSearchConfig(
+        en1=en1,
+        en2=en2,
+        energy_pad=energy_pad,
+    )
     pipeline = BlindLineSearchPipeline(config=config)
     return pipeline.run(
         spectra_or_energy,
@@ -732,19 +835,19 @@ def find_emission_lines(
     sy=None,
     en1=0,
     en2=10,
+    energy_pad=0.0,
     show_plot=False,
     output_dir=None,
     plot_name='bliss_fit.png',
     *,
     final_fit: bool = False,
 ):
-    """Run the default BLiSS emission-line search.
-
-    By default this now returns candidate lines before the expensive global fit.
-    Use ``final_fit=True`` to preserve the old one-step behaviour, or call
-    ``fit_global`` later on a user-filtered candidate table.
-    """
-    config = BlindLineSearchConfig(en1=en1, en2=en2)
+    """Run the default BLiSS emission-line search."""
+    config = BlindLineSearchConfig(
+        en1=en1,
+        en2=en2,
+        energy_pad=energy_pad,
+    )
     pipeline = BlindLineSearchPipeline(config=config)
     return pipeline.run(
         spectra_or_energy,
