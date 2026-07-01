@@ -1,4 +1,4 @@
-"""Plot BLiSS candidate probability against line energy."""
+"""Plot BLiSS candidate probability against line energy. """
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
