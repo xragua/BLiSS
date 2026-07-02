@@ -1,7 +1,25 @@
 """Rebin one-dimensional spectra by bin count, S/N criterion, or resolution."""
 import numpy as np
 
-def _clean_arrays(x, y, sy):
+def _estimate_bin_width_from_centers(x):
+    """Estimate bin widths from bin centers."""
+
+    x = np.asarray(x, dtype=float)
+
+    if len(x) == 0:
+        return np.array([])
+
+    if len(x) == 1:
+        return np.ones_like(x)
+
+    edges = np.empty(len(x) + 1, dtype=float)
+    edges[1:-1] = 0.5 * (x[:-1] + x[1:])
+    edges[0] = x[0] - 0.5 * (x[1] - x[0])
+    edges[-1] = x[-1] + 0.5 * (x[-1] - x[-2])
+
+    return np.diff(edges)
+
+def _clean_arrays(x, y, sy, *extra_arrays):
     """Convert spectrum arrays to numpy arrays and remove invalid bins.
 
     Parameters
@@ -19,11 +37,21 @@ def _clean_arrays(x, y, sy):
         Filtered ``x``, ``y``, and ``sy`` arrays containing only finite values with
         strictly positive uncertainties.
     """
-    x = np.asarray(x)
-    y = np.asarray(y)
-    sy = np.asarray(sy)
-    valid_mask = (sy > 0) & np.isfinite(x) & np.isfinite(y) & np.isfinite(sy)
-    return (x[valid_mask], y[valid_mask], sy[valid_mask])
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    sy = np.asarray(sy, dtype=float)
+    extras = [np.asarray(arr, dtype=float) for arr in extra_arrays]
+    valid_mask = (
+        np.isfinite(x)
+        & np.isfinite(y)
+        & np.isfinite(sy)
+        & (sy > 0))
+    for arr in extras:
+        valid_mask &= np.isfinite(arr)
+    cleaned = [x[valid_mask], y[valid_mask], sy[valid_mask]]
+    for arr in extras:
+        cleaned.append(arr[valid_mask])
+    return tuple(cleaned)
 
 def rebin_bins(x, y, sy, nbin):
     """Rebin a spectrum by grouping a fixed number of consecutive bins.
@@ -107,61 +135,61 @@ def rebin_snr(x, y, sy, min_snr=5,min_bins=1):
             x_bin, y_bin, sy_bin = [], [], []
     return np.array(x_new), np.array(y_new), np.array(sy_new)
 
-def rebin_resolution(x, y, sy, resolution, mode="sum"):
+def rebin_resolution(x, y, sy, resolution, bin_width=None):
     """
-    Rebin a spectrum onto fixed-width coordinate intervals.
+    Rebin a spectrum in density units onto fixed-width coordinate intervals.
 
-    Parameters
-    ----------
-    x : array-like
-        Spectral coordinate values, e.g. energy in keV.
-    y : array-like
-        Spectral values.
-    sy : array-like
-        One-sigma uncertainties on y.
-    resolution : float
-        Width of each output bin in the same units as x.
-    mode : {"sum", "mean", "ivar_mean"}
-        Rebinning mode.
+    Use this for spectra in units such as:
 
-        "sum":
-            Appropriate for counts per bin.
-            y_new = sum(y_i)
-            sy_new = sqrt(sum(sy_i^2))
+        photons cm^-2 s^-1 keV^-1
+        counts s^-1 keV^-1
 
-        "mean":
-            Simple arithmetic mean.
-            y_new = mean(y_i)
-            sy_new = sqrt(sum(sy_i^2)) / N
-
-        "ivar_mean":
-            Inverse-variance weighted mean.
-            Appropriate for fluxes/rates, not raw counts.
+    The integrated quantity over energy is preserved.
 
     Returns
     -------
-    x_new, y_new, sy_new : numpy.ndarray
-        Rebinned coordinate, values, and uncertainties.
+    x_new, y_new, sy_new, bin_width_new : numpy.ndarray
+        Rebinned coordinate, density values, uncertainties, and bin widths.
     """
 
-    x, y, sy = _clean_arrays(x, y, sy)
+    if bin_width is None:
+        x, y, sy = _clean_arrays(x, y, sy)
+    else:
+        x, y, sy, bin_width = _clean_arrays(x, y, sy, bin_width)
 
     if len(x) == 0:
-        return np.array([]), np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    sy = sy[order]
+
+    if bin_width is None:
+        bin_width = _estimate_bin_width_from_centers(x)
+    else:
+        bin_width = bin_width[order]
+
+    valid_width = np.isfinite(bin_width) & (bin_width > 0)
+
+    x = x[valid_width]
+    y = y[valid_width]
+    sy = sy[valid_width]
+    bin_width = bin_width[valid_width]
+
+    if len(x) == 0:
+        return np.array([]), np.array([]), np.array([]), np.array([])
 
     resolution = float(resolution)
 
     if not np.isfinite(resolution) or resolution <= 0:
         raise ValueError("resolution must be a positive finite number.")
 
-    # Sort spectrum
-    order = np.argsort(x)
-    x = x[order]
-    y = y[order]
-    sy = sy[order]
+    input_left = x - 0.5 * bin_width
+    input_right = x + 0.5 * bin_width
 
-    x_start = np.nanmin(x)
-    x_end = np.nanmax(x)
+    x_start = np.nanmin(input_left)
+    x_end = np.nanmax(input_right)
 
     edges = np.arange(x_start, x_end + resolution, resolution)
 
@@ -171,46 +199,35 @@ def rebin_resolution(x, y, sy, resolution, mode="sum"):
     x_new = []
     y_new = []
     sy_new = []
+    bin_width_new = []
 
-    for k, (left, right) in enumerate(zip(edges[:-1], edges[1:])):
+    for left, right in zip(edges[:-1], edges[1:]):
 
-        if k == len(edges) - 2:
-            mask = (x >= left) & (x <= right)
-        else:
-            mask = (x >= left) & (x < right)
+        overlap = np.minimum(input_right, right) - np.maximum(input_left, left)
+        overlap = np.maximum(overlap, 0.0)
+
+        mask = overlap > 0
 
         if not np.any(mask):
             continue
 
-        y_bin = y[mask]
-        sy_bin = sy[mask]
+        dE = overlap[mask]
+        total_width = np.sum(dE)
 
-        # Use fixed bin center, not mean input coordinate
-        x_center = 0.5 * (left + right)
+        if total_width <= 0:
+            continue
 
-        if mode == "sum":
-            y_out = np.sum(y_bin)
-            sy_out = np.sqrt(np.sum(sy_bin**2))
+        integrated_y = np.sum(y[mask] * dE)
+        integrated_sy = np.sqrt(np.sum((sy[mask] * dE) ** 2))
 
-        elif mode == "mean":
-            n = len(y_bin)
-            y_out = np.mean(y_bin)
-            sy_out = np.sqrt(np.sum(sy_bin**2)) / n
+        y_out = integrated_y / total_width
+        sy_out = integrated_sy / total_width
 
-        elif mode == "ivar_mean":
-            valid = np.isfinite(sy_bin) & (sy_bin > 0)
-            if not np.any(valid):
-                continue
+        x_out = np.sum(x[mask] * dE) / total_width
 
-            weights = 1.0 / sy_bin[valid]**2
-            y_out = np.sum(weights * y_bin[valid]) / np.sum(weights)
-            sy_out = np.sqrt(1.0 / np.sum(weights))
-
-        else:
-            raise ValueError("mode must be 'sum', 'mean', or 'ivar_mean'.")
-
-        x_new.append(x_center)
+        x_new.append(x_out)
         y_new.append(y_out)
         sy_new.append(sy_out)
+        bin_width_new.append(total_width)
 
-    return np.asarray(x_new), np.asarray(y_new), np.asarray(sy_new)
+    return np.asarray(x_new),np.asarray(y_new),np.asarray(sy_new)

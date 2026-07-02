@@ -458,30 +458,66 @@ def plot_global_fit(
     output_path: str | Path | None = None,
     *,
     show_plot: bool = True,
+    energy_min: float | None = None,
+    energy_max: float | None = None,
+    size_fig_input: tuple[float, float] | None = None,
 ) -> None:
-    """Plot the spectrum, empirical baseline, and global line model."""
-    plt.figure()
+    """Plot the spectrum, empirical baseline, and global line model.
+
+    Parameters
+    ----------
+    spectrum : PreparedSpectrum
+        Prepared spectrum containing energy, values, and uncertainties.
+    base : np.ndarray
+        Empirical baseline.
+    yfit : np.ndarray
+        Global fitted line model.
+    output_path : str, Path, or None, default=None
+        If given, save the figure to this path.
+    show_plot : bool, default=True
+        Whether to display the figure.
+    energy_min : float or None, default=None
+        Minimum energy shown in the plot.
+    energy_max : float or None, default=None
+        Maximum energy shown in the plot.
+    size_fig_input : tuple or None, default=None
+        Figure size, e.g. ``(10, 5)``.
+    """
+
+    if size_fig_input is None:
+        size_fig = (10, 5)
+    else:
+        size_fig = size_fig_input
+
+    plt.figure(figsize=size_fig)
+
     plt.errorbar(
         spectrum.energy,
         spectrum.values,
         yerr=spectrum.uncertainties,
-        label='Data',
+        label="Data",
         alpha=0.2,
     )
-    plt.plot(spectrum.energy, base, 'k:', label='base')
-    plt.plot(spectrum.energy, yfit, 'g:', label='Lines')
-    plt.plot(spectrum.energy, yfit + base, 'r', label='Line+base')
-    plt.xlabel('Energy (keV)')
-    plt.ylabel('Spectra')
+
+    plt.plot(spectrum.energy, base, "k:", label="base")
+    plt.plot(spectrum.energy, yfit, "g:", label="Lines")
+    plt.plot(spectrum.energy, yfit + base, "r", label="Line+base")
+
+    if energy_min is not None or energy_max is not None:
+        plt.xlim(energy_min, energy_max)
+
+    plt.xlabel("Energy (keV)")
+    plt.ylabel("Spectra")
     plt.legend()
     plt.tight_layout()
+
     if output_path is not None:
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+
     if show_plot:
         plt.show()
     else:
         plt.close()
-
 
 def fit_global(
     pd_lines: pd.DataFrame,
@@ -494,11 +530,14 @@ def fit_global(
     ylines: Optional[np.ndarray] = None,
     show_plot: bool = True,
     output_dir=None,
-    plot_name: str = 'bliss_global_fit.png',
+    plot_name: str = "bliss_global_fit.png",
     save_csv: bool = True,
     final_fit_maxfev: int = 100000,
     snr_confidence_threshold: float = 4.0,
     return_yfit: bool = False,
+    energy_min: float | None = None,
+    energy_max: float | None = None,
+    size_fig_input: tuple[float, float] | None = None,
 ):
     """Run only the expensive global fit on user-filtered candidate lines.
 
@@ -525,17 +564,34 @@ def fit_global(
     final_fit_maxfev : int, default: 100000
         Maximum number of function evaluations in ``curve_fit``.
     snr_confidence_threshold : float, default: 4.0
-        S/N threshold above which ``cluster_probability`` is set to 1 if any of ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
+        S/N threshold above which ``cluster_probability`` is set to 1 if any of
+        ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
     return_yfit : bool, default: False
         If true, return ``(result, yfit)`` instead of only ``result``.
+    energy_min, energy_max : float or None, default=None
+        Minimum and maximum energy shown in the diagnostic plot.
+        This only affects the plot, not the fitted energy range.
+    size_fig_input : tuple or None, default=None
+        Figure size passed to ``plot_global_fit``, e.g. ``(10, 5)``.
 
     Returns
     -------
     pandas.DataFrame or tuple
         Final fitted line table, optionally with the fitted line-only model.
     """
-    spectrum = prepare_spectrum(spectra_or_energy, y=y, sy=sy, bin_width=bin_width)
-    base, ylines = _baseline_and_line_excess(spectrum, base=base, ylines=ylines)
+
+    spectrum = prepare_spectrum(
+        spectra_or_energy,
+        y=y,
+        sy=sy,
+        bin_width=bin_width,
+    )
+
+    base, ylines = _baseline_and_line_excess(
+        spectrum,
+        base=base,
+        ylines=ylines,
+    )
 
     result, yfit = final_fit_and_metrics(
         spectrum=spectrum,
@@ -547,17 +603,32 @@ def fit_global(
     )
 
     output_path = None
+
     if output_dir is not None:
         output_dir = ensure_output_folder(output_dir)
         output_path = output_dir / plot_name
+
         if save_csv:
-            result.to_csv(output_dir / 'global_fit_lines.csv', index=False)
+            result.to_csv(
+                output_dir / "global_fit_lines.csv",
+                index=False,
+            )
 
     if show_plot or output_path is not None:
-        plot_global_fit(spectrum=spectrum, base=base, yfit=yfit, output_path=output_path, show_plot=show_plot)
+        plot_global_fit(
+            spectrum=spectrum,
+            base=base,
+            yfit=yfit,
+            output_path=output_path,
+            show_plot=show_plot,
+            energy_min=energy_min,
+            energy_max=energy_max,
+            size_fig_input=size_fig_input,
+        )
 
     if return_yfit:
         return result, yfit
+
     return result
 
 
@@ -669,6 +740,8 @@ class BlindLineSearchPipeline:
             self.config.num_synthetic_simulations,
             seed=self.config.synthetic_seed,
         )
+
+        
 
         synthetic_candidates = return_raw_lines(
             simx,
