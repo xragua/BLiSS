@@ -22,7 +22,12 @@ LINE_OUTPUT_COLUMNS = [
 ]
 
 CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
-FINAL_OUTPUT_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
+FINAL_OUTPUT_COLUMNS = [
+    'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
+    'relative_power', 'noise_on_block', 'value_on_line',
+    'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
+    'snr_area', 'ew', 'cluster_probability','fit_error_flag'
+]
 
 
 @dataclass
@@ -333,47 +338,24 @@ def _ensure_line_context(
     return clean_lines
 
 
+
+
 def final_fit_and_metrics(
     spectrum: PreparedSpectrum,
     clean_lines: pd.DataFrame,
     base: Optional[np.ndarray] = None,
     ylines: Optional[np.ndarray] = None,
-    *,
     final_fit_maxfev: int = 100000,
     snr_confidence_threshold: float = 4.0,
-) -> tuple[pd.DataFrame, np.ndarray]:
-    """Refit selected candidates and compute final line diagnostics.
+):
+    """Refit selected candidates and compute final line diagnostics."""
 
-    This is the expensive global step. It is intentionally independent from the
-    candidate-search step, so users can filter ``clean_lines`` before running the
-    multi-Gaussian fit.
+    base, ylines = _baseline_and_line_excess(
+        spectrum,
+        base=base,
+        ylines=ylines,
+    )
 
-    Parameters
-    ----------
-    spectrum : PreparedSpectrum
-        Sorted spectrum used for the final fit.
-    clean_lines : pandas.DataFrame
-        User-filtered candidate lines. At minimum it must contain ``amplitude``,
-        ``center``, and ``sigma``. If local context columns are missing, they are
-        estimated from the nearest spectral bin.
-    base : numpy.ndarray or None, default: None
-        Empirical baseline evaluated on ``spectrum.energy``. If omitted, it is
-        recomputed from ``spectrum.values``.
-    ylines : numpy.ndarray or None, default: None
-        Baseline-subtracted spectrum fitted with the multi-Gaussian model. If
-        omitted, it is recomputed as ``max(values - base, 0)``.
-    final_fit_maxfev : int, default: 100000
-        Maximum number of function evaluations allowed in the final ``curve_fit``.
-    snr_confidence_threshold : float, default: 4.0
-        S/N threshold above which ``cluster_probability`` is set to 1 if any of ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
-
-    Returns
-    -------
-    tuple
-        ``(result, yfit)`` where ``result`` is the final candidate DataFrame and
-        ``yfit`` is the fitted multi-Gaussian line model on the full spectrum grid.
-    """
-    base, ylines = _baseline_and_line_excess(spectrum, base=base, ylines=ylines)
     clean_lines = _ensure_line_context(
         clean_lines,
         spectrum=spectrum,
@@ -382,12 +364,45 @@ def final_fit_and_metrics(
     )
 
     fitted_final = pd.DataFrame(
-        columns=['amplitude', 'center', 'sigma', 'eamplitude', 'ecenter', 'esigma']
+        columns=[
+            "amplitude",
+            "center",
+            "sigma",
+            "eamplitude",
+            "ecenter",
+            "esigma",
+        ]
     )
+
     yfit = np.zeros_like(spectrum.energy, dtype=float)
 
     if len(clean_lines) > 0:
-        p0, bounds = p0_generator_final(spectrum.energy, spectrum.values, clean_lines)
+        p0, bounds = p0_generator_final(
+            spectrum.energy,
+            spectrum.values,
+            clean_lines,
+        )
+
+        # Use the spectral uncertainties as weights in the global fit.
+        # curve_fit bounds constrain fitted parameters, not their errors.
+        fit_sigma = np.asarray(spectrum.uncertainties, dtype=float)
+
+        valid_sigma = (
+            np.isfinite(fit_sigma)
+            & (fit_sigma > 0)
+        )
+
+        if np.any(valid_sigma):
+            fallback_sigma = np.nanmedian(fit_sigma[valid_sigma])
+        else:
+            fallback_sigma = 1.0
+
+        fit_sigma = np.where(
+            valid_sigma,
+            fit_sigma,
+            fallback_sigma,
+        )
+
         try:
             popt, pcov = curve_fit(
                 n_gaussian,
@@ -395,59 +410,180 @@ def final_fit_and_metrics(
                 ylines,
                 p0=p0,
                 bounds=bounds,
+                sigma=fit_sigma,
+                absolute_sigma=True,
                 maxfev=final_fit_maxfev,
             )
+
             errors = np.sqrt(np.diag(pcov))
-            yfit = n_gaussian(spectrum.energy, *popt)
+
+            yfit = n_gaussian(
+                spectrum.energy,
+                *popt,
+            )
+
             popt_ = np.reshape(popt, (-1, 3))
             errors_ = np.reshape(errors, (-1, 3))
+
             for k in range(len(clean_lines)):
-                new_line = np.concatenate([popt_[k], errors_[k]])
+                new_line = np.concatenate(
+                    [
+                        popt_[k],
+                        errors_[k],
+                    ]
+                )
                 fitted_final.loc[k] = new_line
+
         except RuntimeError as exc:
-            print(f'Error final fitting: {exc}')
+            print(f"Error final fitting: {exc}")
+
         except ValueError as exc:
-            print(f'Error final fitting: {exc}')
+            print(f"Error final fitting: {exc}")
 
     clean_select = clean_lines[
-        ['relative_power', 'noise_on_block', 'value_on_line', 'base_on_line', 'cluster_probability']
+        [
+            "relative_power",
+            "noise_on_block",
+            "value_on_line",
+            "base_on_line",
+            "cluster_probability",
+        ]
     ]
-    result = pd.concat([fitted_final, clean_select], axis=1)
+
+    result = pd.concat(
+        [
+            fitted_final,
+            clean_select,
+        ],
+        axis=1,
+    )
 
     if len(result) == 0:
         return pd.DataFrame(columns=FINAL_OUTPUT_COLUMNS), yfit
 
-    cols = ['amplitude', 'sigma', 'eamplitude', 'esigma']
-    result[cols] = result[cols].apply(pd.to_numeric, errors='coerce')
-    result['noise_on_block'] = pd.to_numeric(result['noise_on_block'], errors='coerce')
-    result['snr_peak'] = _safe_divide(result['amplitude'], result['noise_on_block'])
-    result['snr_amplitude'] = _safe_divide(result['amplitude'], result['eamplitude'])
+    cols = [
+        "amplitude",
+        "center",
+        "sigma",
+        "eamplitude",
+        "ecenter",
+        "esigma",
+    ]
+
+    result[cols] = result[cols].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+
+    result["noise_on_block"] = pd.to_numeric(
+        result["noise_on_block"],
+        errors="coerce",
+    )
+
+    result["snr_peak"] = _safe_divide(
+        result["amplitude"],
+        result["noise_on_block"],
+    )
+
+    result["snr_amplitude"] = _safe_divide(
+        result["amplitude"],
+        result["eamplitude"],
+    )
 
     k = np.sqrt(2.0 * np.pi)
-    result['area'] = result['amplitude'] * result['sigma'] * k
-    result['earea'] = np.sqrt(
-        (result['sigma'] * k * result['eamplitude']) ** 2
-        +
-        (result['amplitude'] * k * result['esigma']) ** 2
+
+    result["area"] = (
+        result["amplitude"]
+        * result["sigma"]
+        * k
     )
-    result['snr_area'] = _safe_divide(result['area'], result['earea'])
+
+    result["earea"] = np.sqrt(
+        (result["sigma"] * k * result["eamplitude"]) ** 2
+        +
+        (result["amplitude"] * k * result["esigma"]) ** 2
+    )
+
+    result["snr_area"] = _safe_divide(
+        result["area"],
+        result["earea"],
+    )
 
     ew_vals = []
+
     for row in result.itertuples(index=False):
+
         center = float(row.center)
         sigma = float(row.sigma)
-        mask = (spectrum.energy >= center - 2.0 * sigma) & (spectrum.energy <= center + 2.0 * sigma)
-        valid_mask = mask & np.isfinite(base) & (base != 0)
+
+        mask = (
+            (spectrum.energy >= center - 2.0 * sigma)
+            & (spectrum.energy <= center + 2.0 * sigma)
+        )
+
+        valid_mask = (
+            mask
+            & np.isfinite(base)
+            & (base != 0)
+        )
+
         if np.any(valid_mask):
-            ew = np.sum(yfit[valid_mask] / base[valid_mask] * spectrum.bin_width[valid_mask]) * 1000.0
+            ew = (
+                np.sum(
+                    yfit[valid_mask]
+                    / base[valid_mask]
+                    * spectrum.bin_width[valid_mask]
+                )
+                * 1000.0
+            )
         else:
             ew = np.nan
+
         ew_vals.append(ew)
 
-    result['ew'] = ew_vals
+    result["ew"] = ew_vals
+
+    # --------------------------------------------------------
+    # Reliability flags for covariance-derived uncertainties
+    # --------------------------------------------------------
+
+    result["fit_error_flag"] = ""
+
+    center_bound_width = 0.2
+    sigma_bound_width = clean_lines["sigma"].to_numpy(dtype=float) + 0.01
+
+    bad_center_error = (
+        ~np.isfinite(result["ecenter"])
+        | (result["ecenter"] > center_bound_width)
+    )
+
+    bad_sigma_error = (
+        ~np.isfinite(result["esigma"])
+        | (result["esigma"] > sigma_bound_width)
+    )
+
+    bad_amplitude_error = (
+        ~np.isfinite(result["eamplitude"])
+        | (result["eamplitude"] > np.abs(result["amplitude"]))
+    )
+
+    bad_error = (
+        bad_center_error
+        | bad_sigma_error
+        | bad_amplitude_error
+    )
+
+    result.loc[bad_error, "fit_error_flag"] = "unconstrained"
+
     result = result[FINAL_OUTPUT_COLUMNS]
-    high_snr = _snr_confidence_mask(result, snr_confidence_threshold)
-    result.loc[high_snr, 'cluster_probability'] = 1.0
+
+    high_snr = _snr_confidence_mask(
+        result,
+        snr_confidence_threshold,
+    )
+
+    result.loc[high_snr, "cluster_probability"] = 1.0
+
     return result, yfit
 
 

@@ -108,39 +108,46 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
     return candidates[[col for col in desired_order if col in candidates.columns]]
 
 def add_most_probable_ion(pd_fit, v_doppler_kms):
-    """Add the strongest compatible atomic identification to each BLiSS line.
+    """Add only the most probable ion as the first column.
 
-    Parameters
-    ----------
-    pd_fit : pandas.DataFrame
-        Fitted BLiSS line table. The function reads ``center`` and optionally
-        ``sigma`` from each row.
-    v_doppler_kms : float
-        Velocity half-width used when matching fitted centers to atomic rest
-        energies.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Input line table combined with the top-ranked atomic identification for
-        each row when a compatible transition is available.
+    All original columns in ``pd_fit`` are preserved.
     """
-    top_candidates = []
-    for idx, row in pd_fit.iterrows():
-        center_energy = row['center']
-        sigma_center_energy = row.get('sigma', None)
-        candidates = identify_line(center_energy, sigma_center_energy, v_doppler_kms)
-        if not candidates.empty:
-            top_candidates.append(candidates.iloc[0])
+
+    if pd_fit is None or len(pd_fit) == 0:
+        out = pd_fit.copy()
+        if "ion" not in out.columns:
+            out.insert(0, "ion", [])
+        return out
+
+    if "center" not in pd_fit.columns:
+        raise ValueError("pd_fit must contain a 'center' column.")
+
+    out = pd_fit.copy().reset_index(drop=True)
+
+    ions = []
+
+    for _, row in out.iterrows():
+
+        center_energy = row["center"]
+        sigma_center_energy = row.get("sigma", None)
+
+        candidates = identify_line(
+            center_energy,
+            sigma_center_energy,
+            v_doppler_kms,
+        )
+
+        if not candidates.empty and "ion" in candidates.columns:
+            ions.append(candidates.iloc[0]["ion"])
         else:
-            top_candidates.append(pd.Series(dtype='object'))
-    ion_info_df = pd.DataFrame(top_candidates).reset_index(drop=True)
-    result = pd.concat([pd_fit.reset_index(drop=True), ion_info_df], axis=1)
-    desired_order = ['ion',  'energy_keV', 'doppler_kms', 'center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude',
-       'base_on_line', 'value_on_line', 'noise_on_block', 'snr_peak',
-       'snr_area', 'relative_power', 'area', 'earea', 'ew',
-       'cluster_probability']
-    return result[[col for col in desired_order if col in result.columns]]
+            ions.append("--")
+
+    if "ion" in out.columns:
+        out = out.drop(columns=["ion"])
+
+    out.insert(0, "ion", ions)
+
+    return out
 
 def get_all_compatible_lines(pd_fit, v_doppler_kms):
     """Collect every compatible atomic transition for each fitted line.
