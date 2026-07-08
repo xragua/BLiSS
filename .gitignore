@@ -26,3 +26,4 @@ notebooks/*
 !notebooks/*.ipynb
 !notebooks/*.dat
 results/
+notebooks/results_xte_1855-026/
