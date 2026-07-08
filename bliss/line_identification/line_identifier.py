@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from .atomic_line_table import st_reduced
 
+
 class LineIdentifier:
     """Identify fitted BLiSS lines using a configurable Doppler window.
 
@@ -30,84 +31,85 @@ class LineIdentifier:
         self.atomic_table = atomic_table
 
     def add_most_probable(self, lines):
-        """Attach the highest-ranked compatible ion to each fitted line.
-
-        Parameters
-        ----------
-        lines : pandas.DataFrame
-            BLiSS line table containing at least a ``center`` column and, when
-            available, fitted widths and amplitudes.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Copy of the input table augmented with the best atomic-line match for each
-            candidate.
-        """
-        return add_most_probable_ion(lines, self.v_doppler_kms)
+        """Attach the highest-ranked compatible ion to each fitted line."""
+        return add_most_probable_ion(
+            lines,
+            self.v_doppler_kms,
+            pd_data=self.atomic_table,
+        )
 
     def all_compatible(self, lines):
-        """Return all atomic transitions compatible with each fitted line.
+        """Return all atomic transitions compatible with each fitted line."""
+        return get_all_compatible_lines(
+            lines,
+            self.v_doppler_kms,
+            pd_data=self.atomic_table,
+        )
 
-        Parameters
-        ----------
-        lines : pandas.DataFrame
-            BLiSS candidate table containing fitted line centers.
-
-        Returns
-        -------
-        dict
-            Mapping from candidate-row index to a DataFrame of all atomic transitions
-            inside the configured Doppler window.
-        """
-        return get_all_compatible_lines(lines, self.v_doppler_kms)
 
 def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, pd_data=st_reduced):
-    """Find atomic transitions compatible with one measured line center.
+    """Find atomic transitions compatible with one measured line center."""
 
-    Parameters
-    ----------
-    center_energy_keV : float
-        Fitted line centroid in keV.
-    center_sigma_keV : float or None, default: None
-        Fitted Gaussian width in keV. It is accepted for API compatibility but the
-        current energy window is set by ``v_doppler_kms``.
-    v_doppler_kms : float or None, default: None
-        Velocity half-width used to compute the allowed energy interval around
-        ``center_energy_keV``. If omitted or zero, only exact-energy matches can be
-        returned.
-    pd_data : pandas.DataFrame, default: bundled atomic table
-        Atomic transition table to search. It must include ``energy_keV`` and the
-        columns used for ranking, such as ``scaled_prob``.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Compatible transitions sorted by decreasing ``scaled_prob`` and including
-        the implied Doppler shift in km/s.
-    """
     c = 299792.458
+
     elines = np.array(pd_data.energy_keV)
+
     delta_E_sigma = 0
     delta_E_doppler = 0
+
     if center_sigma_keV:
         delta_E_sigma = center_sigma_keV
+
     if v_doppler_kms:
         delta_E_doppler = center_energy_keV * v_doppler_kms / c
+
     delta_E = delta_E_doppler
+
     energy_min = center_energy_keV - delta_E
     energy_max = center_energy_keV + delta_E
+
     idx = np.where((elines >= energy_min) & (elines <= energy_max))[0]
+
     candidates = pd_data.iloc[idx].copy().reset_index(drop=True)
-    candidates['doppler_kms'] = c * (center_energy_keV - candidates['energy_keV']) / candidates['energy_keV']
-    candidates = candidates.sort_values(by='scaled_prob', ascending=False).reset_index(drop=True)
-    desired_order = ['ion',  'energy_keV', 'doppler_kms', 'center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude',
-       'base_on_line', 'value_on_line', 'noise_on_block', 'snr_peak',
-       'snr_area', 'relative_power', 'area', 'earea', 'ew',
-       'cluster_probability']
+
+    if len(candidates) == 0:
+        return candidates
+
+    candidates["doppler_kms"] = (
+        c * (center_energy_keV - candidates["energy_keV"]) / candidates["energy_keV"]
+    )
+
+    candidates = candidates.sort_values(
+        by="scaled_prob",
+        ascending=False,
+    ).reset_index(drop=True)
+
+    desired_order = [
+        "ion",
+        "energy_keV",
+        "doppler_kms",
+        "center",
+        "sigma",
+        "amplitude",
+        "ecenter",
+        "esigma",
+        "eamplitude",
+        "base_on_line",
+        "value_on_line",
+        "noise_on_block",
+        "snr_peak",
+        "snr_area",
+        "relative_power",
+        "area",
+        "earea",
+        "ew",
+        "cluster_probability",
+    ]
+
     return candidates[[col for col in desired_order if col in candidates.columns]]
 
-def add_most_probable_ion(pd_fit, v_doppler_kms):
+
+def add_most_probable_ion(pd_fit, v_doppler_kms, pd_data=st_reduced):
     """Add the most probable ion and its Doppler velocity.
 
     All original columns in ``pd_fit`` are preserved.
@@ -119,7 +121,7 @@ def add_most_probable_ion(pd_fit, v_doppler_kms):
     out = pd_fit.copy().reset_index(drop=True)
 
     if len(out) == 0:
-        for col in ["ion", "doppler_kms"]:
+        for col in ["doppler_kms", "ion"]:
             if col not in out.columns:
                 out.insert(0, col, [])
         return out
@@ -139,6 +141,7 @@ def add_most_probable_ion(pd_fit, v_doppler_kms):
             center_energy,
             sigma_center_energy,
             v_doppler_kms,
+            pd_data=pd_data,
         )
 
         if not candidates.empty and "ion" in candidates.columns:
@@ -155,32 +158,31 @@ def add_most_probable_ion(pd_fit, v_doppler_kms):
         if col in out.columns:
             out = out.drop(columns=[col])
 
-    # Insert doppler first, then ion, so ion remains the first column.
     out.insert(0, "doppler_kms", vdoppler)
     out.insert(0, "ion", ions)
 
     return out
 
-def get_all_compatible_lines(pd_fit, v_doppler_kms):
-    """Collect every compatible atomic transition for each fitted line.
 
-    Parameters
-    ----------
-    pd_fit : pandas.DataFrame
-        Fitted BLiSS line table with a ``center`` column.
-    v_doppler_kms : float
-        Doppler velocity half-width used for the compatibility search.
+def get_all_compatible_lines(pd_fit, v_doppler_kms, pd_data=st_reduced):
+    """Collect every compatible atomic transition for each fitted line."""
 
-    Returns
-    -------
-    dict
-        Dictionary keyed by the input row index. Each value is a DataFrame of
-        compatible transitions, or an empty DataFrame when no transition matches.
-    """
     compatible_lines_dict = {}
+
     for idx, row in pd_fit.iterrows():
-        center_energy = row['center']
-        sigma_center_energy = row.get('sigma', None)
-        candidates = identify_line(center_energy, sigma_center_energy, v_doppler_kms)
-        compatible_lines_dict[idx] = candidates if not candidates.empty else pd.DataFrame()
+
+        center_energy = row["center"]
+        sigma_center_energy = row.get("sigma", None)
+
+        candidates = identify_line(
+            center_energy,
+            sigma_center_energy,
+            v_doppler_kms,
+            pd_data=pd_data,
+        )
+
+        compatible_lines_dict[idx] = (
+            candidates if not candidates.empty else pd.DataFrame()
+        )
+
     return compatible_lines_dict
