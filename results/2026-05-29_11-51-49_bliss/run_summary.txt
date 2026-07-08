@@ -1,3 +1,0 @@
-BLiSS run completed
-Results folder: /Users/graciela/Desktop/git/BLiSS/results/2026-05-29_11-51-49_bliss
-Number of detected candidates: 41

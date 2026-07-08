@@ -25,3 +25,4 @@ notebooks/*
 # But keep notebook files and data files directly inside notebooks/
 !notebooks/*.ipynb
 !notebooks/*.dat
+results/
