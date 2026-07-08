@@ -98,7 +98,7 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
     energy_min = center_energy_keV - delta_E
     energy_max = center_energy_keV + delta_E
     idx = np.where((elines >= energy_min) & (elines <= energy_max))[0]
-    candidates = st_reduced.iloc[idx].copy().reset_index(drop=True)
+    candidates = pd_data.iloc[idx].copy().reset_index(drop=True)
     candidates['doppler_kms'] = c * (center_energy_keV - candidates['energy_keV']) / candidates['energy_keV']
     candidates = candidates.sort_values(by='scaled_prob', ascending=False).reset_index(drop=True)
     desired_order = ['ion',  'energy_keV', 'doppler_kms', 'center', 'sigma', 'amplitude', 'ecenter', 'esigma', 'eamplitude',
@@ -108,23 +108,27 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
     return candidates[[col for col in desired_order if col in candidates.columns]]
 
 def add_most_probable_ion(pd_fit, v_doppler_kms):
-    """Add only the most probable ion as the first column.
+    """Add the most probable ion and its Doppler velocity.
 
     All original columns in ``pd_fit`` are preserved.
     """
 
-    if pd_fit is None or len(pd_fit) == 0:
-        out = pd_fit.copy()
-        if "ion" not in out.columns:
-            out.insert(0, "ion", [])
-        return out
-
-    if "center" not in pd_fit.columns:
-        raise ValueError("pd_fit must contain a 'center' column.")
+    if pd_fit is None:
+        return pd_fit
 
     out = pd_fit.copy().reset_index(drop=True)
 
+    if len(out) == 0:
+        for col in ["ion", "doppler_kms"]:
+            if col not in out.columns:
+                out.insert(0, col, [])
+        return out
+
+    if "center" not in out.columns:
+        raise ValueError("pd_fit must contain a 'center' column.")
+
     ions = []
+    vdoppler = []
 
     for _, row in out.iterrows():
 
@@ -138,13 +142,21 @@ def add_most_probable_ion(pd_fit, v_doppler_kms):
         )
 
         if not candidates.empty and "ion" in candidates.columns:
-            ions.append(candidates.iloc[0]["ion"])
+            best = candidates.iloc[0]
+
+            ions.append(best["ion"])
+            vdoppler.append(best["doppler_kms"])
+
         else:
             ions.append("--")
+            vdoppler.append(np.nan)
 
-    if "ion" in out.columns:
-        out = out.drop(columns=["ion"])
+    for col in ["ion", "doppler_kms"]:
+        if col in out.columns:
+            out = out.drop(columns=[col])
 
+    # Insert doppler first, then ion, so ion remains the first column.
+    out.insert(0, "doppler_kms", vdoppler)
     out.insert(0, "ion", ions)
 
     return out
