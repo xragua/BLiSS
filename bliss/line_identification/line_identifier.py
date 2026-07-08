@@ -108,7 +108,6 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
 
     return candidates[[col for col in desired_order if col in candidates.columns]]
 
-
 def add_most_probable_ion(pd_fit, v_doppler_kms, pd_data=st_reduced):
     """Add the most probable ion and its Doppler velocity.
 
@@ -138,9 +137,14 @@ def add_most_probable_ion(pd_fit, v_doppler_kms, pd_data=st_reduced):
         sigma_center_energy = row.get("sigma", None)
 
         candidates = identify_line(
+
             center_energy,
             sigma_center_energy,
             v_doppler_kms,
+
+            center_energy_keV=center_energy,
+            center_sigma_keV=sigma_center_energy,
+            v_doppler_kms=v_doppler_kms,
             pd_data=pd_data,
         )
 
@@ -167,6 +171,9 @@ def add_most_probable_ion(pd_fit, v_doppler_kms, pd_data=st_reduced):
 def get_all_compatible_lines(pd_fit, v_doppler_kms, pd_data=st_reduced):
     """Collect every compatible atomic transition for each fitted line."""
 
+def get_all_compatible_lines(pd_fit, v_doppler_kms, pd_data=st_reduced):
+    """Collect every compatible atomic transition for each fitted line."""
+
     compatible_lines_dict = {}
 
     for idx, row in pd_fit.iterrows():
@@ -175,9 +182,13 @@ def get_all_compatible_lines(pd_fit, v_doppler_kms, pd_data=st_reduced):
         sigma_center_energy = row.get("sigma", None)
 
         candidates = identify_line(
+
             center_energy,
             sigma_center_energy,
             v_doppler_kms,
+            center_energy_keV=center_energy,
+            center_sigma_keV=sigma_center_energy,
+            v_doppler_kms=v_doppler_kms,
             pd_data=pd_data,
         )
 
