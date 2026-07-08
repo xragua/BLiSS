@@ -3,3 +3,25 @@ examples/
 paper/
 *.egg-info/
 *.egg-info/
+
+# macOS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Python packaging
+*.egg-info/
+build/
+dist/
+
+# Ignore everything inside notebooks by default
+notebooks/*
+
+# But keep notebook files and data files directly inside notebooks/
+!notebooks/*.ipynb
+!notebooks/*.dat
