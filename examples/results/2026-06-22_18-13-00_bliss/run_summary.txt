@@ -1,3 +1,0 @@
-BLiSS run completed
-Results folder: results/2026-06-22_18-13-00_bliss
-Number of detected candidates: 12
