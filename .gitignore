@@ -2,3 +2,4 @@ bliss_for_isis/
 examples/
 paper/
 *.egg-info/
+*.egg-info/
