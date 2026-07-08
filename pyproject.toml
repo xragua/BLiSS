@@ -3,10 +3,16 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bliss-line-search"
+name = "bliss-lib"
 version = "0.1.0"
 description = "BLiSS: Blind Line Search System"
+readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Luis Abalo"},
+    {name = "Graciela Sanjurjo-Ferrín"}
+]
 dependencies = [
     "numpy",
     "pandas",
@@ -14,8 +20,28 @@ dependencies = [
     "scikit-learn",
     "matplotlib",
     "astropy",
-    "jupyter",
 ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+[project.optional-dependencies]
+notebooks = ["jupyter"]
+dev = [
+    "pytest",
+    "build",
+    "twine",
+]
+
+[project.urls]
+Homepage = "https://github.com/xragua/bliss"
+Repository = "https://github.com/xragua/bliss"
+Issues = "https://github.com/xragua/bliss/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

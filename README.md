@@ -1,69 +1,124 @@
-
-
 # BLiSS — Blind Line Search System
 
-**BLiSS** (Blind Line Search System) is an open-source Python package for finding emission lines in spectra without telling the code where to look first.
+**BLiSS** (Blind Line Search System) is an open-source Python package for the automatic detection and identification of emission lines in astronomical spectra.
 
+Rather than requiring users to manually inspect spectra or provide a list of candidate line energies, BLiSS performs a genuine blind line search directly on the data, ranking statistically significant emission-line candidates and optionally identifying them using atomic databases.
 
-In other words: a **real blind line-search algorithm** — you only need your spectrum.
-
-**BLiSS** was designed to simplify and speed up spectral analysis in X-ray astronomy. Instead of manually inspecting spectra, guessing candidate energies, and testing lines one by one, **BLiSS** performs an automatic search for statistically significant emission features and then cross-matches them with atomic transitions.
-
-
-The package combines Gaussian line-profile fitting, statistical scoring, and database-based identification using XSTAR atomic data. It is especially useful when the continuum is complex, uncertain, or simply not the main focus of the analysis.
-
-
-Although **BLiSS** was developed for X-ray spectra, the core idea is more general: if you have spectral data with uncertainties, BLiSS can help you search for emission features in a systematic and reproducible way.
-
+Originally developed for X-ray spectroscopy, BLiSS is designed around a general workflow that can be applied to any spectral dataset with associated uncertainties.
 
 ---
 
-## Main features
+## Features
 
-BLiSS is designed to make emission-line searches fast, systematic, and reproducible. Its main features include:
+- **Blind emission-line search**
+  - Automatically searches spectra for statistically significant emission features.
+  - No prior knowledge of line positions is required.
 
-- **Real blind emission-line search**  
-  No prior list of candidate energies is required. BLiSS searches the spectrum directly and identifies statistically relevant emission-like features.
+- **Automatic Gaussian fitting**
+  - Fits candidate features with Gaussian profiles.
+  - Provides statistical ranking of all detected lines.
 
-- **Automatic Gaussian fitting**  
-  Candidate features are modeled with Gaussian profiles and ranked using statistical scores, helping users decide which lines deserve further inspection.
+- **Continuum-independent workflow**
+  - Line searches can be performed without defining a global continuum model beforehand.
 
-- **Continuum-independent workflow**  
-  BLiSS does not require a predefined global continuum model to start searching for lines, making it especially useful for complex or uncertain spectral shapes.
+- **Atomic line identification**
+  - Cross-matches detected features with XSTAR atomic transitions.
+  - Supports Doppler velocity constraints.
 
-- **Atomic line identification with XSTAR**  
-  Detected candidates can be cross-matched with atomic transitions from XSTAR, including Doppler-velocity constraints to account for shifted lines.
+- **Flexible rebinning**
+  - Rebin spectra by instrumental resolution or target signal-to-noise ratio.
 
-- **Flexible rebinning utilities**  
-  BLiSS includes tools to rebin spectra according to instrumental resolution or to reach a target signal-to-noise ratio.
+- **ISIS integration**
+  - Automatically generates Gaussian components for ISIS spectral fitting.
 
-- **ISIS integration**  
-  Detected emission lines can be automatically added to ISIS spectral models, simplifying follow-up fitting and interpretation.
-
-- **Reproducible analysis**  
-  The same search criteria can be applied consistently across many spectra, reducing subjective choices and making BLiSS useful for large datasets.
-
-
-If you have any questions or need assistance, please feel free to reach out: graciela.sanjurjo@ua.es.
-
-
-
-## Getting started
-
-### Installation
----------------------------------------------------------
-
-
-You can install the package directly from PyPI using pip: **pip install bliss**.
-
-Or download the code from [here](https://github.com/xragua/bliss/releases/tag/0.2.9).
-
-Some examples of their usage are presented [here](https://github.com/xragua/bliss/tree/main/example).
-
-And here [here](https://github.com/xragua/bliss) is the page of this package 
+- **Reproducible analyses**
+  - Applies identical search criteria across large spectral samples.
 
 ---
 
-## License
+# Installation
 
-MIT license
+Install BLiSS directly from PyPI:
+
+```bash
+pip install bliss-lib
+```
+
+or install the development version from GitHub:
+
+```bash
+git clone https://github.com/xragua/bliss.git
+cd bliss
+pip install -e .
+```
+
+---
+
+# Quick start
+
+```python
+import bliss
+
+# Import your spectrum
+
+# Run the blind line search
+
+# Inspect the detected candidates
+```
+
+Example notebooks are available in the `example/` directory:
+
+https://github.com/xragua/bliss/tree/main/example
+
+---
+
+# Documentation
+
+GitHub repository:
+
+https://github.com/xragua/bliss
+
+Latest releases:
+
+https://github.com/xragua/bliss/releases
+
+---
+
+# Requirements
+
+- Python 3.10 or newer
+- NumPy
+- SciPy
+- Pandas
+- Astropy
+- Matplotlib
+
+These dependencies are installed automatically with BLiSS.
+
+---
+
+# Citation
+
+If you use BLiSS in your research, please cite:
+
+> Abalo, L., Sanjurjo-Ferrín, G., et al. (2026), *BLiSS: Blind Line Search System*, Astronomy & Computing.
+
+(The citation will be updated once the paper is published.)
+
+---
+
+# Support
+
+Bug reports, feature requests and suggestions are welcome through GitHub Issues:
+
+https://github.com/xragua/bliss/issues
+
+For scientific questions, you can also contact:
+
+luisabalo.com 
+
+---
+
+# License
+
+This project is distributed under the **MIT License**.
