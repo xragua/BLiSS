@@ -29,21 +29,17 @@ BLiSS is designed to make emission-line searches fast, systematic, and reproduci
 - **Continuum-independent workflow**  
   BLiSS does not require a predefined global continuum model to start searching for lines, making it especially useful for complex or uncertain spectral shapes.
 
-- **Atomic line identification with XSTAR**  
+- **Atomic line identification with XSTAR database**  
   Detected candidates can be cross-matched with atomic transitions from XSTAR, including Doppler-velocity constraints to account for shifted lines.
 
 - **Flexible rebinning utilities**  
   BLiSS includes tools to rebin spectra according to instrumental resolution or to reach a target signal-to-noise ratio.
-
-- **ISIS integration**  
-  Detected emission lines can be automatically added to ISIS spectral models, simplifying follow-up fitting and interpretation.
 
 - **Reproducible analysis**  
   The same search criteria can be applied consistently across many spectra, reducing subjective choices and making BLiSS useful for large datasets.
 
 
 If you have any questions or need assistance, please feel free to reach out: graciela.sanjurjo@ua.es.
-
 
 
 ## Getting started
@@ -54,6 +50,9 @@ If you have any questions or need assistance, please feel free to reach out: gra
 
 
 [Here](https://github.com/xragua/bliss) you can find the source code.
+
+You also can istall it bia pypi: 
+**pip install bliss-lib**
 
 ---
 

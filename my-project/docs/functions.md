@@ -1,179 +1,385 @@
+# Functions
 
-# FUNCTIONS
+This page summarizes the main public functions used in a standard BLiSS workflow.
+
+The recommended workflow is:
+
+1. optionally rebin the spectrum;
+2. estimate or inspect the empirical baseline;
+3. run the blind candidate search with `find_candidate_lines`;
+4. filter the returned candidate table;
+5. run the optional global multi-Gaussian fit with `fit_global`;
+6. inspect the result with the plotting utilities.
+
+```python
+from bliss.spectrum_data.rebinning_tools import rebin_bins, rebin_snr, rebin_resolution
+from bliss.line_search.empirical_baseline import base_calculator
+from bliss.line_search.blind_line_search import find_candidate_lines, fit_global
+from bliss.plotting.line_probability_plotter import plot_line_prob
+```
 
 ---
 
-## Rebin functions
+## Baseline estimation
+
+### `base_calculator(y, min_window=None, max_window=None, n_windows=30, n_iter=1, clip_sigma=1.0, reject="both", sigma_mode="global", clip_to_data=False, hair_window=9, hair_clip_sigma=2.0, hair_n_iter=10, hair_strength=1.0, return_info=False)`
+
+Estimate the default BLiSS empirical baseline for a one-dimensional spectrum.
+
+The baseline is an algorithmic lower-envelope estimate. It is intended for blind line detection and should not be interpreted as a physical continuum model.
+
+The default method applies:
+
+1. a family of sigma-clipped moving averages;
+2. the point-wise minimum across window sizes;
+3. a one-sided correction that removes narrow downward baseline spikes.
+
+By default, the moving-average windows are chosen adaptively from the spectrum length:
+
+- `min_window = max(len(y) / 100, 5)`
+- `max_window = max(len(y) / 10, 50)`
+
+**Parameters**
+
+- `y` *(array-like)* – Input spectral values.
+- `min_window`, `max_window` *(int or None)* – Minimum and maximum moving-average window sizes in bins. If omitted, adaptive values are used.
+- `n_windows` *(int, default=30)* – Number of window sizes sampled between `min_window` and `max_window`.
+- `n_iter` *(int, default=1)* – Number of sigma-clipping iterations.
+- `clip_sigma` *(float, default=1.0)* – Sigma threshold used during clipping.
+- `reject` *{"both", "positive", "negative"}, default="both"* – Which residuals are rejected during sigma clipping.
+- `sigma_mode` *{"global", "local"}, default="global"* – Whether the clipping dispersion is estimated globally or locally.
+- `clip_to_data` *(bool, default=False)* – If `True`, force the final baseline not to exceed the data.
+- `hair_window` *(int, default=9)* – Running-median window for the downward-spike correction.
+- `hair_clip_sigma` *(float, default=2.0)* – Clipping threshold for downward-spike detection.
+- `hair_n_iter` *(int, default=10)* – Maximum number of downward-spike correction iterations.
+- `hair_strength` *(float, default=1.0)* – Strength of the downward-spike correction.
+- `return_info` *(bool, default=False)* – If `True`, also return diagnostic information.
+
+**Returns**
+
+- `baseline` *(numpy.ndarray)* – Empirical baseline with the same length as `y`.
+- `info` *(dict, optional)* – Returned only if `return_info=True`.
+
+**Example**
+
+```python
+base = base_calculator(values)
+ylines = np.maximum(values - base, 0)
+```
 
 ---
+
+## Rebinning functions
 
 ### `rebin_bins(x, y, sy, nbin)`
 
-Rebins spectra by grouping data points into fixed-size bins.  
-Each bin contains a specified number of data points (`nbin`), and values are combined  
-using weighted averages (`weights = 1 / σ²`).  
+Rebin a spectrum by grouping a fixed number of original bins into each output bin.
 
-**Use case:**  
-Reduce data resolution or smooth spectra without biasing results toward low-uncertainty points.
+Values are combined using inverse-variance weighting, with weights `1 / sy**2`.
 
-**Parameters:**  
-- `x` *(array-like)* – Energy or wavelength array.  
-- `y` *(array-like)* – Flux or counts corresponding to `x`.  
-- `sy` *(array-like)* – 1σ uncertainties associated with `y`.  
-- `nbin` *(int)* – Number of points per new bin.
+**Use case**
 
-**Returns:**  
-- `x_rebinned` *(np.ndarray)* – Weighted mean x-values per bin.  
-- `y_rebinned` *(np.ndarray)* – Weighted mean y-values per bin.  
-- `sy_rebinned` *(np.ndarray)* – Combined 1σ errors per bin.
+Use this when you want a simple reduction of spectral resolution by grouping every `nbin` adjacent points.
+
+**Parameters**
+
+- `x` *(array-like)* – Energy, wavelength, or spectral coordinate array.
+- `y` *(array-like)* – Spectral values.
+- `sy` *(array-like)* – One-sigma uncertainties associated with `y`.
+- `nbin` *(int)* – Number of input points per output bin.
+
+**Returns**
+
+- `x_rebinned` *(numpy.ndarray)* – Weighted mean coordinate values.
+- `y_rebinned` *(numpy.ndarray)* – Weighted mean spectral values.
+- `sy_rebinned` *(numpy.ndarray)* – Combined one-sigma uncertainties.
 
 ---
 
 ### `rebin_snr(x, y, sy, snr_threshold)`
 
-Performs adaptive rebinning based on a target signal-to-noise ratio (SNR).  
-Data points are accumulated until the combined bin reaches the desired SNR,  
-ensuring consistent statistical quality across the spectrum. Ideal for faint sources or data with variable noise levels.
+Adaptively rebin a spectrum until each output bin reaches a target signal-to-noise ratio.
 
-**Parameters:**  
-- `x` *(array-like)* – Energy or wavelength array.  
-- `y` *(array-like)* – Flux or counts corresponding to `x`.  
-- `sy` *(array-like)* – 1σ uncertainties associated with `y`.  
-- `snr_threshold` *(float)* – Minimum SNR per output bin.
+Adjacent points are accumulated until the combined bin reaches `snr_threshold`.
 
-**Returns:**  
-- `x_rebinned` *(np.ndarray)* – Weighted mean x-values per bin.  
-- `y_rebinned` *(np.ndarray)* – Weighted mean y-values per bin.  
-- `sy_rebinned` *(np.ndarray)* – Combined 1σ errors per bin.
+**Use case**
+
+Use this for faint spectra or spectra with strongly variable statistical quality across the band.
+
+**Parameters**
+
+- `x` *(array-like)* – Energy, wavelength, or spectral coordinate array.
+- `y` *(array-like)* – Spectral values.
+- `sy` *(array-like)* – One-sigma uncertainties associated with `y`.
+- `snr_threshold` *(float)* – Minimum target S/N per output bin.
+
+**Returns**
+
+- `x_rebinned` *(numpy.ndarray)* – Weighted mean coordinate values.
+- `y_rebinned` *(numpy.ndarray)* – Weighted mean spectral values.
+- `sy_rebinned` *(numpy.ndarray)* – Combined one-sigma uncertainties.
 
 ---
 
 ### `rebin_resolution(x, y, sy, resolution)`
 
-Rebins spectra according to a specified resolution along the x-axis (e.g., energy or wavelength).  
-The data are grouped within bins of fixed width (`resolution`), and combined through weighted averages. The aim of this method is to match instrumental resolution or create uniformly spaced spectral data.
+Rebin a spectrum into bins of approximately fixed width in the spectral coordinate.
 
-**Parameters:**  
-- `x` *(array-like)* – Energy or wavelength array.  
-- `y` *(array-like)* – Flux or counts corresponding to `x`.  
-- `sy` *(array-like)* – 1σ uncertainties associated with `y`.  
-- `resolution` *(float)* – Desired bin width for the rebinned spectrum.
+**Use case**
 
-**Returns:**  
-- `x_rebinned` *(np.ndarray)* – Weighted mean x-values per bin.  
-- `y_rebinned` *(np.ndarray)* – Weighted mean y-values per bin.  
-- `sy_rebinned` *(np.ndarray)* – Combined 1σ errors per bin.
+Use this when you want a uniform spectral spacing, for example to match an instrumental resolution or to prepare spectra for repeated BLiSS searches over the same grid.
 
----
+**Parameters**
 
-## Find emission lines
+- `x` *(array-like)* – Energy, wavelength, or spectral coordinate array.
+- `y` *(array-like)* – Spectral values.
+- `sy` *(array-like)* – One-sigma uncertainties associated with `y`.
+- `resolution` *(float)* – Width of each output bin in the same units as `x`.
 
----
+**Returns**
 
-### `find_emission_lines(spectra_or_energy, y=None, sy=None, en1=0, en2=10, show_plot=False)`
+- `x_rebinned` *(numpy.ndarray)* – Weighted mean coordinate values.
+- `y_rebinned` *(numpy.ndarray)* – Weighted mean spectral values.
+- `sy_rebinned` *(numpy.ndarray)* – Combined one-sigma uncertainties.
 
-Performs end-to-end emission-line detection and characterization.
+**Example**
 
-1. **Input handling:** accepts a file path to a 4-column ASCII spectrum (`E_low, E_high, counts, error`) or arrays `x, y, sy`.  
-2. **Continuum estimation:** computes `base` and `ylines = y - base`.  
-3. **Detection:** isolates candidate line regions and fits Gaussian profiles.  
-4. **Simulation and scoring:** builds synthetic lines, evaluates probabilities with a Gaussian Mixture Model (GMM).  
-5. **Final fitting:** re-fits selected lines globally to refine parameters.  
-6. **Metrics:** computes SNR, integrated area, errors, and equivalent width.
-
-**Parameters:**  
-- `spectra_or_energy` *(str or array-like)* – Path to ASCII file or energy array.  
-- `y` *(array-like, optional)* – Flux or counts (required if `spectra_or_energy` is an array).  
-- `sy` *(array-like, optional)* – 1σ uncertainties (required if `spectra_or_energy` is an array).  
-- `en1` *(float, optional)* – Lower limit of energy range for line selection (default = 0).  
-- `en2` *(float, optional)* – Upper limit of energy range for line selection (default = 10).  
-- `show_plot` *(bool, optional)* – If `True`, plots fitted lines and continuum.
-
-**Returns:**  
-- `pd.DataFrame` – Table of detected emission lines with columns:  
-  `center, sigma, amplitude, ecenter, esigma, eamplitude, base_on_line, value_on_line, noise_on_block, snr, relative_power, area, earea, ew, cluster_probability`.
-
-> **Notes:**  
-> - Input files must contain four whitespace-separated columns: `E_low, E_high, counts, error`.  
-> - SNR = `amplitude / noise_on_block`.  
-> - Area = `amplitude * sigma * sqrt(2π)`.  
-> - EW ≈ ∑((line_flux / continuum) × dE) around ±2σ.
-
+```python
+energy_reb, values_reb, errors_reb = rebin_resolution(
+    energy,
+    values,
+    errors,
+    resolution=0.01,
+)
+```
 
 ---
 
-## Identify lines
-Functions for matching detected emission features with catalogued atomic transitions.
+## Blind candidate search
+
+### `find_candidate_lines(spectra_or_energy, y=None, sy=None, en1=0, en2=10, energy_pad=0.0, output_dir=None)`
+
+Run BLiSS up to candidate detection and probability estimation.
+
+This is the recommended first step of the BLiSS line-search workflow. It estimates the empirical baseline, isolates positive excess regions, fits local Gaussian candidates, compares the detections with synthetic residual spectra, and returns a candidate-line catalogue.
+
+This function does **not** perform the final global multi-Gaussian fit. To do that, filter the returned candidate table and pass it to `fit_global`.
+
+**Parameters**
+
+- `spectra_or_energy` *(str, pathlib.Path, Spectrum-like object, or array-like)* – Input spectrum. This can be:
+  - a four-column ASCII file with `E_low, E_high, values, error`;
+  - an object with `energy`, `values`, and `uncertainties` attributes;
+  - an array of spectral coordinates, in which case `y` and `sy` must also be provided.
+- `y` *(array-like or None, default=None)* – Spectral values for direct array input.
+- `sy` *(array-like or None, default=None)* – One-sigma uncertainties for direct array input.
+- `en1` *(float, default=0)* – Lower limit of the nominal search interval.
+- `en2` *(float, default=10)* – Upper limit of the nominal search interval.
+- `energy_pad` *(float, default=0.0)* – Extra padding added internally around `en1` and `en2` during candidate detection. The final returned table is still restricted to `en1`–`en2`.
+- `output_dir` *(str, pathlib.Path, or None, default=None)* – If provided, save `candidate_lines.csv` and `run_summary.txt` in this directory. If omitted, BLiSS creates a timestamped results folder.
+
+**Returns**
+
+- `pandas.DataFrame` – Candidate-line table before the optional global fit.
+
+The returned table contains:
+
+```text
+center, ecenter, sigma, esigma, amplitude, eamplitude,
+relative_power, noise_on_block, value_on_line, base_on_line,
+snr_peak, snr_amplitude, area, earea, snr_area, ew,
+cluster_probability
+```
+
+**Example**
+
+```python
+candidate_lines = find_candidate_lines(
+    energy,
+    values,
+    errors,
+    en1=6.0,
+    en2=7.2,
+    energy_pad=0.1,
+    output_dir="results/vela_x1_fe_candidates",
+)
+```
+
+A typical filtering step before the global fit could be:
+
+```python
+clean_mask = (
+    (candidate_lines["cluster_probability"] >= 0.90)
+    & (candidate_lines["relative_power"] >= 0.10)
+    & (
+        (candidate_lines["snr_peak"] >= 5)
+        | (candidate_lines["snr_area"] >= 5)
+        | (candidate_lines["snr_amplitude"] >= 5)
+    )
+)
+
+clean_lines = candidate_lines[clean_mask].reset_index(drop=True)
+```
 
 ---
 
-### `identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, pd_data=st_reduced)`
+## Global multi-Gaussian fit
 
-Finds and ranks candidate emission lines near an observed energy.  
-The search window is defined by the Doppler velocity tolerance (and optionally by the line’s σ).  
-Candidates are ranked by their scaled flux (Aul strength).
+### `fit_global(pd_lines, spectra_or_energy, y=None, sy=None, *, bin_width=None, base=None, ylines=None, show_plot=True, output_dir=None, plot_name="bliss_global_fit.png", save_csv=True, final_fit_maxfev=100000, snr_confidence_threshold=4.0, return_yfit=False, energy_min=None, energy_max=None, size_fig_input=None)`
 
-**Parameters:**  
-- `center_energy_keV` *(float)* – Observed line energy in keV.  
-- `center_sigma_keV` *(float, optional)* – Uncertainty (σ) in the observed energy in keV.  
-- `v_doppler_kms` *(float, optional)* – Doppler velocity tolerance in km/s.  
-- `pd_data` *(pd.DataFrame, optional)* – Reference line catalog (default = `st_reduced`, from the XSTAR database).
+Run the final simultaneous multi-Gaussian fit on a user-selected candidate table.
 
-**Returns:**  
-- `pd.DataFrame` – Candidate emission lines within the energy window, sorted by `scaled_flux` (descending).  
-  Includes computed Doppler shift values (`doppler_kms`) and other relevant line fields.
+This function is intended to be called after `find_candidate_lines`, once the user has applied their own filters to the candidate catalogue.
 
-> **Note:** Uses the **XSTAR** line database as the default catalog for matching.
+The fit is performed on the line-excess spectrum, using the empirical baseline either computed internally or supplied through `base` and `ylines`.
+
+**Parameters**
+
+- `pd_lines` *(pandas.DataFrame)* – Candidate-line table after user filtering. It must contain at least `amplitude`, `center`, and `sigma`.
+- `spectra_or_energy` *(str, pathlib.Path, Spectrum-like object, or array-like)* – Same input types accepted by `find_candidate_lines`.
+- `y` *(array-like or None, default=None)* – Spectral values for direct array input.
+- `sy` *(array-like or None, default=None)* – One-sigma uncertainties for direct array input.
+- `bin_width` *(array-like or None, default=None)* – Optional bin widths for direct array input. If omitted, they are estimated from adjacent coordinate spacing.
+- `base` *(numpy.ndarray or None, default=None)* – Optional precomputed empirical baseline.
+- `ylines` *(numpy.ndarray or None, default=None)* – Optional precomputed positive line-excess array.
+- `show_plot` *(bool, default=True)* – If `True`, display the final diagnostic plot.
+- `output_dir` *(str, pathlib.Path, or None, default=None)* – If provided, save the fitted line table and diagnostic plot there.
+- `plot_name` *(str, default="bliss_global_fit.png")* – Diagnostic plot filename inside `output_dir`.
+- `save_csv` *(bool, default=True)* – If `True`, save `global_fit_lines.csv` when `output_dir` is provided.
+- `final_fit_maxfev` *(int, default=100000)* – Maximum number of function evaluations passed to `scipy.optimize.curve_fit`.
+- `snr_confidence_threshold` *(float, default=4.0)* – If any available S/N diagnostic exceeds this value, `cluster_probability` is set to 1.
+- `return_yfit` *(bool, default=False)* – If `True`, return `(result, yfit)` instead of only `result`.
+- `energy_min`, `energy_max` *(float or None, default=None)* – Minimum and maximum energy shown in the diagnostic plot. These values affect only the plot, not the fitted range.
+- `size_fig_input` *(tuple or None, default=None)* – Figure size passed to the diagnostic plot, for example `(10, 5)`.
+
+**Returns**
+
+- `pandas.DataFrame` – Final fitted line table.
+- `(pandas.DataFrame, numpy.ndarray)` – Returned only if `return_yfit=True`; the second element is the fitted line-only model.
+
+The final table contains:
+
+```text
+center, ecenter, sigma, esigma, amplitude, eamplitude,
+relative_power, noise_on_block, value_on_line, base_on_line,
+snr_peak, snr_amplitude, area, earea, snr_area, ew,
+cluster_probability, fit_error_flag
+```
+
+`fit_error_flag` is set to `unconstrained` when the covariance-derived uncertainties are not informative.
+
+**Example**
+
+```python
+global_lines = fit_global(
+    clean_lines,
+    energy,
+    values,
+    errors,
+    show_plot=True,
+    output_dir="results/vela_x1_fe_global_fit",
+    energy_min=6.0,
+    energy_max=7.2,
+    size_fig_input=(10, 5),
+)
+```
+
+If the line-only model is also needed:
+
+```python
+global_lines, yfit = fit_global(
+    clean_lines,
+    energy,
+    values,
+    errors,
+    return_yfit=True,
+)
+```
 
 ---
 
-### `add_most_probable_ion(pd_fit, v_doppler_kms)`
+## Plotting functions
 
-Annotates each fitted emission line with the **most probable ion** from the reference catalog,  
-based on proximity within a Doppler velocity tolerance.
+### `plot_line_prob(df, show=True, size_fig_input=None)`
 
-**Parameters:**  
-- `pd_fit` *(pd.DataFrame)* – DataFrame of detected emission lines containing at least a `center` column  
-  (and optionally `sigma`).  
-- `v_doppler_kms` *(float)* – Doppler velocity tolerance in km/s used for matching.
+Plot Gaussian candidate components colored by `cluster_probability`.
 
-**Returns:**  
-- `pd.DataFrame` – Combined DataFrame containing the original fitted lines plus the most probable ion  
-  and its catalog properties (e.g., `ion`, `energy_keV`, `doppler_kms`, etc.).
+If the input table contains an `ion` column, ion labels are added automatically above the corresponding Gaussian components.
+
+**Parameters**
+
+- `df` *(pandas.DataFrame)* – Candidate or fitted-line table. It must contain finite values in `center`, `sigma`, `amplitude`, and `cluster_probability`.
+- `show` *(bool, default=True)* – If `True`, display the figure and return `None`. If `False`, return the matplotlib `(fig, ax)` objects.
+- `size_fig_input` *(tuple or None, default=None)* – Optional figure size, for example `(10, 5)`.
+
+**Returns**
+
+- `None` – If `show=True`.
+- `(fig, ax)` – If `show=False`.
+
+**Example**
+
+```python
+plot_line_prob(global_lines)
+```
+
+To save the figure manually:
+
+```python
+fig, ax = plot_line_prob(global_lines, show=False)
+fig.savefig("line_probabilities.png", dpi=150, bbox_inches="tight")
+```
 
 ---
 
-### `get_all_compatible_lines(pd_fit, v_doppler_kms)`
+### `plot_global_fit(spectrum, base, yfit, output_path=None, *, show_plot=True, energy_min=None, energy_max=None, size_fig_input=None)`
 
-For each detected emission line, retrieves **all possible catalog lines** that are compatible  
-with the specified Doppler velocity window.
+Plot the spectrum, empirical baseline, fitted line-only model, and total `baseline + line model`.
 
-**Parameters:**  
-- `pd_fit` *(pd.DataFrame)* – DataFrame of detected emission lines with at least a `center` column  
-  (and optionally `sigma`).  
-- `v_doppler_kms` *(float)* – Doppler velocity tolerance in km/s used for line matching.
+This function is used internally by `fit_global`, but it can also be used directly when working with a prepared BLiSS spectrum.
 
-**Returns:**  
-- `dict[int, pd.DataFrame]` – Dictionary mapping each index of `pd_fit` to a DataFrame  
-  containing all matching catalog lines (empty if no matches are found).
+**Parameters**
+
+- `spectrum` *(`PreparedSpectrum`)* – Prepared spectrum containing `energy`, `values`, `uncertainties`, and `bin_width`.
+- `base` *(numpy.ndarray)* – Empirical baseline evaluated on the same grid.
+- `yfit` *(numpy.ndarray)* – Fitted line-only model evaluated on the same grid.
+- `output_path` *(str, pathlib.Path, or None, default=None)* – If provided, save the plot to this path.
+- `show_plot` *(bool, default=True)* – If `True`, display the figure.
+- `energy_min`, `energy_max` *(float or None, default=None)* – Optional x-axis limits.
+- `size_fig_input` *(tuple or None, default=None)* – Optional figure size.
+
+**Returns**
+
+- `None`
 
 ---
 
-## Plot functions
----
+### `plot_final_bliss_fit(energy, values, uncertainties, baseline, line_model, output_path)`
 
-### `plot_line_prob(df)`
-Plots Gaussian components (e.g., detected emission lines) from a fitted dataset.  
-Each Gaussian is colored according to its cluster probability,  
-with optional ion labels if the `ion` column is present.  
+Save a diagnostic plot of the data, empirical baseline, line-only model, and total model.
 
-**Use case:**  
-Visualize fitted emission lines and their likelihoods in an informative, publication-ready plot.
+**Parameters**
 
-**Parameters:**  
-- `df` *(pd.DataFrame)* – DataFrame containing Gaussian fit results with columns such as  
-  `center`, `sigma`, `amplitude`, and `cluster_probability`.  
-  If an `ion` column is present, labels will be added automatically.
+- `energy` *(numpy.ndarray)* – Spectral coordinate grid.
+- `values` *(numpy.ndarray)* – Observed spectral values.
+- `uncertainties` *(numpy.ndarray)* – One-sigma uncertainties plotted as error bars.
+- `baseline` *(numpy.ndarray)* – Empirical baseline.
+- `line_model` *(numpy.ndarray)* – Fitted line-only model evaluated on `energy`.
+- `output_path` *(str or pathlib.Path)* – Destination image path.
 
-**Returns:**  
-- *None* – Displays a matplotlib figure showing all fitted components with color-coded probabilities.
+**Returns**
+
+- `None`
+
+**Example**
+
+```python
+plot_final_bliss_fit(
+    energy,
+    values,
+    errors,
+    base,
+    yfit,
+    "final_bliss_fit.png",
+)
+```
