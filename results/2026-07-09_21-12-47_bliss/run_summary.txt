@@ -1,0 +1,4 @@
+BLiSS candidate search completed
+Results folder: /Users/graciela/Desktop/git/BLiSS/my-project/docs/results/2026-07-09_21-12-47_bliss
+Number of candidate lines before global fit: 77
+Run fit_global(candidate_lines, spectrum) after user filtering to perform the global fit.
