@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>FUNCTIONS - BLiSS</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../css/custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "FUNCTIONS";
+        var mkdocs_page_input_path = "functions.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="..">
+          <img src="../images/logo.png" class="logo" alt="Logo"/>
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">GETTING STARTED</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">EXAMPLES</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../notebooks/vela_x1_2001_0.5-3keV/">Chandra observation Vela X-1 2001</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../notebooks/vela_x1_2001_6-8keV/">Chandra observation Vela X-1</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../notebooks/XTE_J1855-026/">XMM-Newton observation of XTE-1855-06 during the NS eclispe</a>
+                  </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">FUNCTIONS</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#baseline-estimation">Baseline estimation</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#base_calculatory-min_windownone-max_windownone-n_windows30-n_iter1-clip_sigma10-rejectboth-sigma_modeglobal-clip_to_datafalse-hair_window9-hair_clip_sigma20-hair_n_iter10-hair_strength10-return_infofalse">base_calculator(y, min_window=None, max_window=None, n_windows=30, n_iter=1, clip_sigma=1.0, reject="both", sigma_mode="global", clip_to_data=False, hair_window=9, hair_clip_sigma=2.0, hair_n_iter=10, hair_strength=1.0, return_info=False)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#rebinning-functions">Rebinning functions</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#rebin_binsx-y-sy-nbin">rebin_bins(x, y, sy, nbin)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#rebin_snrx-y-sy-snr_threshold">rebin_snr(x, y, sy, snr_threshold)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#rebin_resolutionx-y-sy-resolution">rebin_resolution(x, y, sy, resolution)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#blind-candidate-search">Blind candidate search</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#find_candidate_linesspectra_or_energy-ynone-synone-en10-en210-energy_pad00-output_dirnone">find_candidate_lines(spectra_or_energy, y=None, sy=None, en1=0, en2=10, energy_pad=0.0, output_dir=None)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#global-multi-gaussian-fit">Global multi-Gaussian fit</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#fit_globalpd_lines-spectra_or_energy-ynone-synone-bin_widthnone-basenone-ylinesnone-show_plottrue-output_dirnone-plot_namebliss_global_fitpng-save_csvtrue-final_fit_maxfev100000-snr_confidence_threshold40-return_yfitfalse-energy_minnone-energy_maxnone-size_fig_inputnone">fit_global(pd_lines, spectra_or_energy, y=None, sy=None, *, bin_width=None, base=None, ylines=None, show_plot=True, output_dir=None, plot_name="bliss_global_fit.png", save_csv=True, final_fit_maxfev=100000, snr_confidence_threshold=4.0, return_yfit=False, energy_min=None, energy_max=None, size_fig_input=None)</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#plotting-functions">Plotting functions</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_line_probdf-showtrue-size_fig_inputnone">plot_line_prob(df, show=True, size_fig_input=None)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_global_fitspectrum-base-yfit-output_pathnone-show_plottrue-energy_minnone-energy_maxnone-size_fig_inputnone">plot_global_fit(spectrum, base, yfit, output_path=None, *, show_plot=True, energy_min=None, energy_max=None, size_fig_input=None)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plot_final_bliss_fitenergy-values-uncertainties-baseline-line_model-output_path">plot_final_bliss_fit(energy, values, uncertainties, baseline, line_model, output_path)</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../references/">REFERENCES</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../contribute/">CONTRIBUTE</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">BLiSS</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">FUNCTIONS</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="functions">Functions</h1>
+<p>This page summarizes the main public functions used in a standard BLiSS workflow.</p>
+<p>The recommended workflow is:</p>
+<ol>
+<li>optionally rebin the spectrum;</li>
+<li>estimate or inspect the empirical baseline;</li>
+<li>run the blind candidate search with <code>find_candidate_lines</code>;</li>
+<li>filter the returned candidate table;</li>
+<li>run the optional global multi-Gaussian fit with <code>fit_global</code>;</li>
+<li>inspect the result with the plotting utilities.</li>
+</ol>
+<pre><code class="language-python">from bliss.spectrum_data.rebinning_tools import rebin_bins, rebin_snr, rebin_resolution
+from bliss.line_search.empirical_baseline import base_calculator
+from bliss.line_search.blind_line_search import find_candidate_lines, fit_global
+from bliss.plotting.line_probability_plotter import plot_line_prob
+</code></pre>
+<hr />
+<h2 id="baseline-estimation">Baseline estimation</h2>
+<h3 id="base_calculatory-min_windownone-max_windownone-n_windows30-n_iter1-clip_sigma10-rejectboth-sigma_modeglobal-clip_to_datafalse-hair_window9-hair_clip_sigma20-hair_n_iter10-hair_strength10-return_infofalse"><code>base_calculator(y, min_window=None, max_window=None, n_windows=30, n_iter=1, clip_sigma=1.0, reject="both", sigma_mode="global", clip_to_data=False, hair_window=9, hair_clip_sigma=2.0, hair_n_iter=10, hair_strength=1.0, return_info=False)</code></h3>
+<p>Estimate the default BLiSS empirical baseline for a one-dimensional spectrum.</p>
+<p>The baseline is an algorithmic lower-envelope estimate. It is intended for blind line detection and should not be interpreted as a physical continuum model.</p>
+<p>The default method applies:</p>
+<ol>
+<li>a family of sigma-clipped moving averages;</li>
+<li>the point-wise minimum across window sizes;</li>
+<li>a one-sided correction that removes narrow downward baseline spikes.</li>
+</ol>
+<p>By default, the moving-average windows are chosen adaptively from the spectrum length:</p>
+<ul>
+<li><code>min_window = max(len(y) / 100, 5)</code></li>
+<li><code>max_window = max(len(y) / 10, 50)</code></li>
+</ul>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>y</code> <em>(array-like)</em> – Input spectral values.</li>
+<li><code>min_window</code>, <code>max_window</code> <em>(int or None)</em> – Minimum and maximum moving-average window sizes in bins. If omitted, adaptive values are used.</li>
+<li><code>n_windows</code> <em>(int, default=30)</em> – Number of window sizes sampled between <code>min_window</code> and <code>max_window</code>.</li>
+<li><code>n_iter</code> <em>(int, default=1)</em> – Number of sigma-clipping iterations.</li>
+<li><code>clip_sigma</code> <em>(float, default=1.0)</em> – Sigma threshold used during clipping.</li>
+<li><code>reject</code> <em>{"both", "positive", "negative"}, default="both"</em> – Which residuals are rejected during sigma clipping.</li>
+<li><code>sigma_mode</code> <em>{"global", "local"}, default="global"</em> – Whether the clipping dispersion is estimated globally or locally.</li>
+<li><code>clip_to_data</code> <em>(bool, default=False)</em> – If <code>True</code>, force the final baseline not to exceed the data.</li>
+<li><code>hair_window</code> <em>(int, default=9)</em> – Running-median window for the downward-spike correction.</li>
+<li><code>hair_clip_sigma</code> <em>(float, default=2.0)</em> – Clipping threshold for downward-spike detection.</li>
+<li><code>hair_n_iter</code> <em>(int, default=10)</em> – Maximum number of downward-spike correction iterations.</li>
+<li><code>hair_strength</code> <em>(float, default=1.0)</em> – Strength of the downward-spike correction.</li>
+<li><code>return_info</code> <em>(bool, default=False)</em> – If <code>True</code>, also return diagnostic information.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>baseline</code> <em>(numpy.ndarray)</em> – Empirical baseline with the same length as <code>y</code>.</li>
+<li><code>info</code> <em>(dict, optional)</em> – Returned only if <code>return_info=True</code>.</li>
+</ul>
+<p><strong>Example</strong></p>
+<pre><code class="language-python">base = base_calculator(values)
+ylines = np.maximum(values - base, 0)
+</code></pre>
+<hr />
+<h2 id="rebinning-functions">Rebinning functions</h2>
+<h3 id="rebin_binsx-y-sy-nbin"><code>rebin_bins(x, y, sy, nbin)</code></h3>
+<p>Rebin a spectrum by grouping a fixed number of original bins into each output bin.</p>
+<p>Values are combined using inverse-variance weighting, with weights <code>1 / sy**2</code>.</p>
+<p><strong>Use case</strong></p>
+<p>Use this when you want a simple reduction of spectral resolution by grouping every <code>nbin</code> adjacent points.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>x</code> <em>(array-like)</em> – Energy, wavelength, or spectral coordinate array.</li>
+<li><code>y</code> <em>(array-like)</em> – Spectral values.</li>
+<li><code>sy</code> <em>(array-like)</em> – One-sigma uncertainties associated with <code>y</code>.</li>
+<li><code>nbin</code> <em>(int)</em> – Number of input points per output bin.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>x_rebinned</code> <em>(numpy.ndarray)</em> – Weighted mean coordinate values.</li>
+<li><code>y_rebinned</code> <em>(numpy.ndarray)</em> – Weighted mean spectral values.</li>
+<li><code>sy_rebinned</code> <em>(numpy.ndarray)</em> – Combined one-sigma uncertainties.</li>
+</ul>
+<hr />
+<h3 id="rebin_snrx-y-sy-snr_threshold"><code>rebin_snr(x, y, sy, snr_threshold)</code></h3>
+<p>Adaptively rebin a spectrum until each output bin reaches a target signal-to-noise ratio.</p>
+<p>Adjacent points are accumulated until the combined bin reaches <code>snr_threshold</code>.</p>
+<p><strong>Use case</strong></p>
+<p>Use this for faint spectra or spectra with strongly variable statistical quality across the band.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>x</code> <em>(array-like)</em> – Energy, wavelength, or spectral coordinate array.</li>
+<li><code>y</code> <em>(array-like)</em> – Spectral values.</li>
+<li><code>sy</code> <em>(array-like)</em> – One-sigma uncertainties associated with <code>y</code>.</li>
+<li><code>snr_threshold</code> <em>(float)</em> – Minimum target S/N per output bin.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>x_rebinned</code> <em>(numpy.ndarray)</em> – Weighted mean coordinate values.</li>
+<li><code>y_rebinned</code> <em>(numpy.ndarray)</em> – Weighted mean spectral values.</li>
+<li><code>sy_rebinned</code> <em>(numpy.ndarray)</em> – Combined one-sigma uncertainties.</li>
+</ul>
+<hr />
+<h3 id="rebin_resolutionx-y-sy-resolution"><code>rebin_resolution(x, y, sy, resolution)</code></h3>
+<p>Rebin a spectrum into bins of approximately fixed width in the spectral coordinate.</p>
+<p><strong>Use case</strong></p>
+<p>Use this when you want a uniform spectral spacing, for example to match an instrumental resolution or to prepare spectra for repeated BLiSS searches over the same grid.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>x</code> <em>(array-like)</em> – Energy, wavelength, or spectral coordinate array.</li>
+<li><code>y</code> <em>(array-like)</em> – Spectral values.</li>
+<li><code>sy</code> <em>(array-like)</em> – One-sigma uncertainties associated with <code>y</code>.</li>
+<li><code>resolution</code> <em>(float)</em> – Width of each output bin in the same units as <code>x</code>.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>x_rebinned</code> <em>(numpy.ndarray)</em> – Weighted mean coordinate values.</li>
+<li><code>y_rebinned</code> <em>(numpy.ndarray)</em> – Weighted mean spectral values.</li>
+<li><code>sy_rebinned</code> <em>(numpy.ndarray)</em> – Combined one-sigma uncertainties.</li>
+</ul>
+<p><strong>Example</strong></p>
+<pre><code class="language-python">energy_reb, values_reb, errors_reb = rebin_resolution(
+    energy,
+    values,
+    errors,
+    resolution=0.01,
+)
+</code></pre>
+<hr />
+<h2 id="blind-candidate-search">Blind candidate search</h2>
+<h3 id="find_candidate_linesspectra_or_energy-ynone-synone-en10-en210-energy_pad00-output_dirnone"><code>find_candidate_lines(spectra_or_energy, y=None, sy=None, en1=0, en2=10, energy_pad=0.0, output_dir=None)</code></h3>
+<p>Run BLiSS up to candidate detection and probability estimation.</p>
+<p>This is the recommended first step of the BLiSS line-search workflow. It estimates the empirical baseline, isolates positive excess regions, fits local Gaussian candidates, compares the detections with synthetic residual spectra, and returns a candidate-line catalogue.</p>
+<p>This function does <strong>not</strong> perform the final global multi-Gaussian fit. To do that, filter the returned candidate table and pass it to <code>fit_global</code>.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>spectra_or_energy</code> <em>(str, pathlib.Path, Spectrum-like object, or array-like)</em> – Input spectrum. This can be:</li>
+<li>a four-column ASCII file with <code>E_low, E_high, values, error</code>;</li>
+<li>an object with <code>energy</code>, <code>values</code>, and <code>uncertainties</code> attributes;</li>
+<li>an array of spectral coordinates, in which case <code>y</code> and <code>sy</code> must also be provided.</li>
+<li><code>y</code> <em>(array-like or None, default=None)</em> – Spectral values for direct array input.</li>
+<li><code>sy</code> <em>(array-like or None, default=None)</em> – One-sigma uncertainties for direct array input.</li>
+<li><code>en1</code> <em>(float, default=0)</em> – Lower limit of the nominal search interval.</li>
+<li><code>en2</code> <em>(float, default=10)</em> – Upper limit of the nominal search interval.</li>
+<li><code>energy_pad</code> <em>(float, default=0.0)</em> – Extra padding added internally around <code>en1</code> and <code>en2</code> during candidate detection. The final returned table is still restricted to <code>en1</code>–<code>en2</code>.</li>
+<li><code>output_dir</code> <em>(str, pathlib.Path, or None, default=None)</em> – If provided, save <code>candidate_lines.csv</code> and <code>run_summary.txt</code> in this directory. If omitted, BLiSS creates a timestamped results folder.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>pandas.DataFrame</code> – Candidate-line table before the optional global fit.</li>
+</ul>
+<p>The returned table contains:</p>
+<pre><code class="language-text">center, ecenter, sigma, esigma, amplitude, eamplitude,
+relative_power, noise_on_block, value_on_line, base_on_line,
+snr_peak, snr_amplitude, area, earea, snr_area, ew,
+cluster_probability
+</code></pre>
+<p><strong>Example</strong></p>
+<pre><code class="language-python">candidate_lines = find_candidate_lines(
+    energy,
+    values,
+    errors,
+    en1=6.0,
+    en2=7.2,
+    energy_pad=0.1,
+    output_dir=&quot;results/vela_x1_fe_candidates&quot;,
+)
+</code></pre>
+<p>A typical filtering step before the global fit could be:</p>
+<pre><code class="language-python">clean_mask = (
+    (candidate_lines[&quot;cluster_probability&quot;] &gt;= 0.90)
+    &amp; (candidate_lines[&quot;relative_power&quot;] &gt;= 0.10)
+    &amp; (
+        (candidate_lines[&quot;snr_peak&quot;] &gt;= 5)
+        | (candidate_lines[&quot;snr_area&quot;] &gt;= 5)
+        | (candidate_lines[&quot;snr_amplitude&quot;] &gt;= 5)
+    )
+)
+
+clean_lines = candidate_lines[clean_mask].reset_index(drop=True)
+</code></pre>
+<hr />
+<h2 id="global-multi-gaussian-fit">Global multi-Gaussian fit</h2>
+<h3 id="fit_globalpd_lines-spectra_or_energy-ynone-synone-bin_widthnone-basenone-ylinesnone-show_plottrue-output_dirnone-plot_namebliss_global_fitpng-save_csvtrue-final_fit_maxfev100000-snr_confidence_threshold40-return_yfitfalse-energy_minnone-energy_maxnone-size_fig_inputnone"><code>fit_global(pd_lines, spectra_or_energy, y=None, sy=None, *, bin_width=None, base=None, ylines=None, show_plot=True, output_dir=None, plot_name="bliss_global_fit.png", save_csv=True, final_fit_maxfev=100000, snr_confidence_threshold=4.0, return_yfit=False, energy_min=None, energy_max=None, size_fig_input=None)</code></h3>
+<p>Run the final simultaneous multi-Gaussian fit on a user-selected candidate table.</p>
+<p>This function is intended to be called after <code>find_candidate_lines</code>, once the user has applied their own filters to the candidate catalogue.</p>
+<p>The fit is performed on the line-excess spectrum, using the empirical baseline either computed internally or supplied through <code>base</code> and <code>ylines</code>.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>pd_lines</code> <em>(pandas.DataFrame)</em> – Candidate-line table after user filtering. It must contain at least <code>amplitude</code>, <code>center</code>, and <code>sigma</code>.</li>
+<li><code>spectra_or_energy</code> <em>(str, pathlib.Path, Spectrum-like object, or array-like)</em> – Same input types accepted by <code>find_candidate_lines</code>.</li>
+<li><code>y</code> <em>(array-like or None, default=None)</em> – Spectral values for direct array input.</li>
+<li><code>sy</code> <em>(array-like or None, default=None)</em> – One-sigma uncertainties for direct array input.</li>
+<li><code>bin_width</code> <em>(array-like or None, default=None)</em> – Optional bin widths for direct array input. If omitted, they are estimated from adjacent coordinate spacing.</li>
+<li><code>base</code> <em>(numpy.ndarray or None, default=None)</em> – Optional precomputed empirical baseline.</li>
+<li><code>ylines</code> <em>(numpy.ndarray or None, default=None)</em> – Optional precomputed positive line-excess array.</li>
+<li><code>show_plot</code> <em>(bool, default=True)</em> – If <code>True</code>, display the final diagnostic plot.</li>
+<li><code>output_dir</code> <em>(str, pathlib.Path, or None, default=None)</em> – If provided, save the fitted line table and diagnostic plot there.</li>
+<li><code>plot_name</code> <em>(str, default="bliss_global_fit.png")</em> – Diagnostic plot filename inside <code>output_dir</code>.</li>
+<li><code>save_csv</code> <em>(bool, default=True)</em> – If <code>True</code>, save <code>global_fit_lines.csv</code> when <code>output_dir</code> is provided.</li>
+<li><code>final_fit_maxfev</code> <em>(int, default=100000)</em> – Maximum number of function evaluations passed to <code>scipy.optimize.curve_fit</code>.</li>
+<li><code>snr_confidence_threshold</code> <em>(float, default=4.0)</em> – If any available S/N diagnostic exceeds this value, <code>cluster_probability</code> is set to 1.</li>
+<li><code>return_yfit</code> <em>(bool, default=False)</em> – If <code>True</code>, return <code>(result, yfit)</code> instead of only <code>result</code>.</li>
+<li><code>energy_min</code>, <code>energy_max</code> <em>(float or None, default=None)</em> – Minimum and maximum energy shown in the diagnostic plot. These values affect only the plot, not the fitted range.</li>
+<li><code>size_fig_input</code> <em>(tuple or None, default=None)</em> – Figure size passed to the diagnostic plot, for example <code>(10, 5)</code>.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>pandas.DataFrame</code> – Final fitted line table.</li>
+<li><code>(pandas.DataFrame, numpy.ndarray)</code> – Returned only if <code>return_yfit=True</code>; the second element is the fitted line-only model.</li>
+</ul>
+<p>The final table contains:</p>
+<pre><code class="language-text">center, ecenter, sigma, esigma, amplitude, eamplitude,
+relative_power, noise_on_block, value_on_line, base_on_line,
+snr_peak, snr_amplitude, area, earea, snr_area, ew,
+cluster_probability, fit_error_flag
+</code></pre>
+<p><code>fit_error_flag</code> is set to <code>unconstrained</code> when the covariance-derived uncertainties are not informative.</p>
+<p><strong>Example</strong></p>
+<pre><code class="language-python">global_lines = fit_global(
+    clean_lines,
+    energy,
+    values,
+    errors,
+    show_plot=True,
+    output_dir=&quot;results/vela_x1_fe_global_fit&quot;,
+    energy_min=6.0,
+    energy_max=7.2,
+    size_fig_input=(10, 5),
+)
+</code></pre>
+<p>If the line-only model is also needed:</p>
+<pre><code class="language-python">global_lines, yfit = fit_global(
+    clean_lines,
+    energy,
+    values,
+    errors,
+    return_yfit=True,
+)
+</code></pre>
+<hr />
+<h2 id="plotting-functions">Plotting functions</h2>
+<h3 id="plot_line_probdf-showtrue-size_fig_inputnone"><code>plot_line_prob(df, show=True, size_fig_input=None)</code></h3>
+<p>Plot Gaussian candidate components colored by <code>cluster_probability</code>.</p>
+<p>If the input table contains an <code>ion</code> column, ion labels are added automatically above the corresponding Gaussian components.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>df</code> <em>(pandas.DataFrame)</em> – Candidate or fitted-line table. It must contain finite values in <code>center</code>, <code>sigma</code>, <code>amplitude</code>, and <code>cluster_probability</code>.</li>
+<li><code>show</code> <em>(bool, default=True)</em> – If <code>True</code>, display the figure and return <code>None</code>. If <code>False</code>, return the matplotlib <code>(fig, ax)</code> objects.</li>
+<li><code>size_fig_input</code> <em>(tuple or None, default=None)</em> – Optional figure size, for example <code>(10, 5)</code>.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>None</code> – If <code>show=True</code>.</li>
+<li><code>(fig, ax)</code> – If <code>show=False</code>.</li>
+</ul>
+<p><strong>Example</strong></p>
+<pre><code class="language-python">plot_line_prob(global_lines)
+</code></pre>
+<p>To save the figure manually:</p>
+<pre><code class="language-python">fig, ax = plot_line_prob(global_lines, show=False)
+fig.savefig(&quot;line_probabilities.png&quot;, dpi=150, bbox_inches=&quot;tight&quot;)
+</code></pre>
+<hr />
+<h3 id="plot_global_fitspectrum-base-yfit-output_pathnone-show_plottrue-energy_minnone-energy_maxnone-size_fig_inputnone"><code>plot_global_fit(spectrum, base, yfit, output_path=None, *, show_plot=True, energy_min=None, energy_max=None, size_fig_input=None)</code></h3>
+<p>Plot the spectrum, empirical baseline, fitted line-only model, and total <code>baseline + line model</code>.</p>
+<p>This function is used internally by <code>fit_global</code>, but it can also be used directly when working with a prepared BLiSS spectrum.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>spectrum</code> <em>(<code>PreparedSpectrum</code>)</em> – Prepared spectrum containing <code>energy</code>, <code>values</code>, <code>uncertainties</code>, and <code>bin_width</code>.</li>
+<li><code>base</code> <em>(numpy.ndarray)</em> – Empirical baseline evaluated on the same grid.</li>
+<li><code>yfit</code> <em>(numpy.ndarray)</em> – Fitted line-only model evaluated on the same grid.</li>
+<li><code>output_path</code> <em>(str, pathlib.Path, or None, default=None)</em> – If provided, save the plot to this path.</li>
+<li><code>show_plot</code> <em>(bool, default=True)</em> – If <code>True</code>, display the figure.</li>
+<li><code>energy_min</code>, <code>energy_max</code> <em>(float or None, default=None)</em> – Optional x-axis limits.</li>
+<li><code>size_fig_input</code> <em>(tuple or None, default=None)</em> – Optional figure size.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>None</code></li>
+</ul>
+<hr />
+<h3 id="plot_final_bliss_fitenergy-values-uncertainties-baseline-line_model-output_path"><code>plot_final_bliss_fit(energy, values, uncertainties, baseline, line_model, output_path)</code></h3>
+<p>Save a diagnostic plot of the data, empirical baseline, line-only model, and total model.</p>
+<p><strong>Parameters</strong></p>
+<ul>
+<li><code>energy</code> <em>(numpy.ndarray)</em> – Spectral coordinate grid.</li>
+<li><code>values</code> <em>(numpy.ndarray)</em> – Observed spectral values.</li>
+<li><code>uncertainties</code> <em>(numpy.ndarray)</em> – One-sigma uncertainties plotted as error bars.</li>
+<li><code>baseline</code> <em>(numpy.ndarray)</em> – Empirical baseline.</li>
+<li><code>line_model</code> <em>(numpy.ndarray)</em> – Fitted line-only model evaluated on <code>energy</code>.</li>
+<li><code>output_path</code> <em>(str or pathlib.Path)</em> – Destination image path.</li>
+</ul>
+<p><strong>Returns</strong></p>
+<ul>
+<li><code>None</code></li>
+</ul>
+<p><strong>Example</strong></p>
+<pre><code class="language-python">plot_final_bliss_fit(
+    energy,
+    values,
+    errors,
+    base,
+    yfit,
+    &quot;final_bliss_fit.png&quot;,
+)
+</code></pre>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../notebooks/XTE_J1855-026/" class="btn btn-neutral float-left" title="XMM-Newton observation of XTE-1855-06 during the NS eclispe"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../references/" class="btn btn-neutral float-right" title="REFERENCES">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../notebooks/XTE_J1855-026/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../references/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

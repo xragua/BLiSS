@@ -31,5 +31,3 @@ notebooks/results_xte_1855-026/
 __pycache__/
 *.pyc
 .virtual_documents/
-my-project/site/
-site/
