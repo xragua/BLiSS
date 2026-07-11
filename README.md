@@ -1,5 +1,8 @@
 # BLiSS — Blind Line Search System
 
+[![arXiv](https://img.shields.io/badge/arXiv-2607.07783-b31b1b.svg)](https://arxiv.org/abs/2607.07783)
+[![Documentation](https://img.shields.io/badge/docs-BLiSS-blue.svg)](https://xragua.github.io/BLiSS/)
+
 **BLiSS** (Blind Line Search System) is an open-source Python package for the automatic detection and identification of emission lines in astronomical spectra.
 
 Rather than requiring users to manually inspect spectra or provide a list of candidate line energies, BLiSS performs a genuine blind line search directly on the data, ranking statistically significant emission-line candidates and optionally identifying them using atomic databases.
@@ -66,9 +69,9 @@ import bliss
 # Inspect the detected candidates
 ```
 
-Example notebooks are available in the `example/` directory:
+Example notebooks are available in the `notebooks/` directory:
 
-https://github.com/xragua/bliss/tree/main/example
+https://github.com/xragua/BLiSS/tree/main/notebooks
 
 ---
 
