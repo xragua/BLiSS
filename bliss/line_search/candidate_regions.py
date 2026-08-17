@@ -23,12 +23,15 @@ class CandidateBlock:
         One-sigma uncertainties associated with ``values``.
     baseline : numpy.ndarray
         Empirical baseline values over the same block.
+    response_sigma : numpy.ndarray or None
+        Instrumental Gaussian-equivalent sigma over the block, when available.
     """
     excess: np.ndarray
     energy: np.ndarray
     values: np.ndarray
     uncertainties: np.ndarray
     baseline: np.ndarray
+    response_sigma: np.ndarray | None = None
 
 class CandidateRegionDetector:
     """Small wrapper object for detecting and fitting raw line candidates."""
@@ -58,7 +61,7 @@ class CandidateRegionDetector:
         """
         return return_raw_lines(x, y, sy, ylines, base)
 
-def _build_candidate_blocks(x, y, sy, ylines, base):
+def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None):
     """Split non-zero line excesses into contiguous candidate blocks.
 
     Parameters
@@ -69,6 +72,8 @@ def _build_candidate_blocks(x, y, sy, ylines, base):
         Baseline-subtracted excess array. Non-zero runs define candidate regions.
     base : array-like
         Baseline values corresponding to ``x``.
+    response_sigma : array-like or None, default: None
+        Instrumental Gaussian-equivalent sigma aligned with ``x``.
 
     Returns
     -------
@@ -108,7 +113,7 @@ def _build_candidate_blocks(x, y, sy, ylines, base):
                 contblocks[i] = contblocks[i][:j]
                 break
     for i in range(len(block_arrays)):
-        blocks.append(CandidateBlock(excess=block_arrays[i], energy=xblocks[i], values=yblocks[i], uncertainties=syblocks[i], baseline=contblocks[i]))
+        blocks.append(CandidateBlock(excess=block_arrays[i], energy=xblocks[i], values=yblocks[i], uncertainties=syblocks[i], baseline=contblocks[i], response_sigma=None if response_sigma is None else np.interp(xblocks[i], np.asarray(x, dtype=float), np.asarray(response_sigma, dtype=float))))
     return blocks
 
 def _fit_candidate_block(block, block_index):
@@ -144,7 +149,7 @@ def _fit_candidate_block(block, block_index):
             max_peaks = int(np.floor(len(block.energy) / 4))
             good_peaks = good_peaks[0:max(1, max_peaks)]
             if len(good_peaks) > 0:
-                p0, bounds = p0_generator(block.energy, block.values, good_peaks)
+                p0, bounds = p0_generator(block.energy, block.values, good_peaks, response_sigma=block.response_sigma)
                 try:
                     popt, pcov = curve_fit(n_gaussian, block.energy, block.values - block.baseline, p0=p0, bounds=bounds, maxfev=100000)
                     errors = np.sqrt(np.diag(pcov))
@@ -194,7 +199,7 @@ def _add_line_context(fitted, x, y, base):
     fitted['relative_power'] = (fitted.value_on_line - fitted.base_on_line) / (fitted.value_on_line + fitted.base_on_line)
     return fitted
 
-def return_raw_lines(x, y, sy, ylines, base):
+def return_raw_lines(x, y, sy, ylines, base, response_sigma=None):
     """Detect contiguous excesses and fit preliminary Gaussian line candidates.
 
     Parameters
@@ -209,6 +214,8 @@ def return_raw_lines(x, y, sy, ylines, base):
         Baseline-subtracted line-excess array.
     base : array-like
         Empirical baseline evaluated over the full spectrum.
+    response_sigma : array-like or None, default: None
+        Instrumental Gaussian-equivalent sigma aligned with ``x``.
 
     Returns
     -------
@@ -216,7 +223,7 @@ def return_raw_lines(x, y, sy, ylines, base):
         Raw candidate-line table with Gaussian parameters, parameter errors,
         goodness-of-fit information, and local continuum context.
     """
-    blocks = _build_candidate_blocks(x, y, sy, ylines, base)
+    blocks = _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=response_sigma)
     rows = []
     for block_index, block in enumerate(blocks):
         rows.extend(_fit_candidate_block(block, block_index))

@@ -18,7 +18,7 @@ LINE_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability'
+    'snr_area', 'ew', 'cluster_probability', 'response_feature', 'response_feature_score'
 ]
 
 CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
@@ -26,7 +26,7 @@ FINAL_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability','fit_error_flag'
+    'snr_area', 'ew', 'cluster_probability', 'response_feature', 'response_feature_score', 'fit_error_flag'
 ]
 
 
@@ -44,6 +44,8 @@ class BlindLineSearchConfig:
         Maximum number of function evaluations allowed in the final ``curve_fit``.
     snr_confidence_threshold : float
         Any available S/N diagnostic above which a candidate is assigned probability 1.
+    response_feature_threshold : float
+        Robust score above which unusually sharp ARF effective-area structure is flagged.
     """
     en1: float = 0.2
     en2: float = 10.0
@@ -52,6 +54,7 @@ class BlindLineSearchConfig:
     synthetic_seed: Optional[int] = None
     final_fit_maxfev: int = 100000
     snr_confidence_threshold: float = 4.0
+    response_feature_threshold: float = 5.0
 
 
 @dataclass
@@ -68,11 +71,20 @@ class PreparedSpectrum:
         One-sigma uncertainties sorted with the spectrum.
     bin_width : numpy.ndarray
         Width of each spectral bin, used when estimating equivalent width.
+    response_sigma : numpy.ndarray or None
+        Instrumental Gaussian-equivalent sigma aligned with the spectral grid.
+    arf_energy : numpy.ndarray or None
+        Energy grid of the associated ARF response.
+    effective_area : numpy.ndarray or None
+        Effective area of the associated ARF response.
     """
     energy: np.ndarray
     values: np.ndarray
     uncertainties: np.ndarray
     bin_width: np.ndarray
+    response_sigma: Optional[np.ndarray] = None
+    arf_energy: Optional[np.ndarray] = None
+    effective_area: Optional[np.ndarray] = None
 
 
 def prepare_spectrum(spectra_or_energy, y=None, sy=None, bin_width=None) -> PreparedSpectrum:
@@ -110,6 +122,9 @@ def prepare_spectrum(spectra_or_energy, y=None, sy=None, bin_width=None) -> Prep
         dE = np.asarray(spectra[1] - spectra[0])
         y = np.asarray(spectra[2])
         sy = np.asarray(spectra[3])
+        response_sigma = None
+        arf_energy = None
+        effective_area = None
     elif all(hasattr(spectra_or_energy, attr) for attr in ('energy', 'values', 'uncertainties')):
         x = np.asarray(spectra_or_energy.energy)
         y = np.asarray(spectra_or_energy.values)
@@ -119,6 +134,12 @@ def prepare_spectrum(spectra_or_energy, y=None, sy=None, bin_width=None) -> Prep
             dE = _estimate_bin_width(x)
         else:
             dE = np.asarray(dE_obj)
+        response_sigma_obj = getattr(spectra_or_energy, 'response_sigma', None)
+        response_sigma = None if response_sigma_obj is None else np.asarray(response_sigma_obj, dtype=float)
+        arf_energy_obj = getattr(spectra_or_energy, 'arf_energy', None)
+        effective_area_obj = getattr(spectra_or_energy, 'effective_area', None)
+        arf_energy = None if arf_energy_obj is None else np.asarray(arf_energy_obj, dtype=float)
+        effective_area = None if effective_area_obj is None else np.asarray(effective_area_obj, dtype=float)
     else:
         x = np.asarray(spectra_or_energy)
         if y is None or sy is None:
@@ -129,15 +150,27 @@ def prepare_spectrum(spectra_or_energy, y=None, sy=None, bin_width=None) -> Prep
             dE = _estimate_bin_width(x)
         else:
             dE = np.asarray(bin_width)
+        response_sigma = None
+        arf_energy = None
+        effective_area = None
 
     if not (len(x) == len(y) == len(sy) == len(dE)):
         raise ValueError('energy, values, uncertainties, and bin_width must have the same length.')
+
+    if response_sigma is not None and len(response_sigma) != len(x):
+        raise ValueError('response_sigma must have the same length as the spectrum.')
+    if (arf_energy is None) != (effective_area is None):
+        raise ValueError('arf_energy and effective_area must either both be provided or both be None.')
+    if arf_energy is not None and len(arf_energy) != len(effective_area):
+        raise ValueError('arf_energy and effective_area must have the same length.')
 
     valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(sy) & np.isfinite(dE) & (sy > 0)
     x = x[valid]
     y = y[valid]
     sy = sy[valid]
     dE = dE[valid]
+    if response_sigma is not None:
+        response_sigma = response_sigma[valid]
 
     order = np.argsort(x)
     return PreparedSpectrum(
@@ -145,6 +178,9 @@ def prepare_spectrum(spectra_or_energy, y=None, sy=None, bin_width=None) -> Prep
         values=y[order],
         uncertainties=sy[order],
         bin_width=dE[order],
+        response_sigma=None if response_sigma is None else response_sigma[order],
+        arf_energy=arf_energy,
+        effective_area=effective_area,
     )
 
 
@@ -199,7 +235,74 @@ def _slice_prepared_spectrum(
         values=spectrum.values[mask],
         uncertainties=spectrum.uncertainties[mask],
         bin_width=spectrum.bin_width[mask],
+        response_sigma=None if spectrum.response_sigma is None else spectrum.response_sigma[mask],
+        arf_energy=spectrum.arf_energy,
+        effective_area=spectrum.effective_area,
     )
+
+def _arf_feature_profile(arf_energy, effective_area):
+    """Return a robust sharpness score for structure in an ARF effective-area curve.
+
+    The score is based on the absolute gradient of log effective area and is
+    normalized with the median absolute deviation. It is used only to flag
+    candidates near unusually sharp response structure; candidates are never
+    rejected automatically.
+    """
+    if arf_energy is None or effective_area is None:
+        return None, None
+
+    energy = np.asarray(arf_energy, dtype=float)
+    area = np.asarray(effective_area, dtype=float)
+    good = np.isfinite(energy) & np.isfinite(area) & (area > 0)
+    energy = energy[good]
+    area = area[good]
+    if len(energy) < 3:
+        return None, None
+
+    order = np.argsort(energy)
+    energy = energy[order]
+    area = area[order]
+    sharpness = np.abs(np.gradient(np.log(area), energy))
+    median = np.nanmedian(sharpness)
+    mad = np.nanmedian(np.abs(sharpness - median))
+    if not np.isfinite(mad) or mad <= 0:
+        score = np.zeros_like(sharpness)
+        score[sharpness > median] = np.inf
+        return energy, score
+    score = 0.67448975 * (sharpness - median) / mad
+    return energy, np.maximum(score, 0.0)
+
+
+def _flag_response_features(lines, spectrum, threshold):
+    """Annotate candidates that lie near unusually sharp ARF structure."""
+    lines = lines.copy()
+    lines['response_feature'] = False
+    lines['response_feature_score'] = np.nan
+    if len(lines) == 0:
+        return lines
+
+    arf_energy, score = _arf_feature_profile(spectrum.arf_energy, spectrum.effective_area)
+    if arf_energy is None:
+        return lines
+
+    arf_step = np.nanmedian(np.diff(arf_energy)) if len(arf_energy) > 1 else 0.0
+    for idx, center in lines['center'].items():
+        center = float(center)
+        if spectrum.response_sigma is not None and len(spectrum.response_sigma):
+            local_sigma = float(np.interp(center, spectrum.energy, spectrum.response_sigma))
+        else:
+            local_sigma = 0.0
+        radius = max(local_sigma, float(arf_step) if np.isfinite(arf_step) else 0.0)
+        nearby = np.abs(arf_energy - center) <= radius
+        if not np.any(nearby):
+            nearest = int(np.argmin(np.abs(arf_energy - center)))
+            local_score = float(score[nearest])
+        else:
+            local_score = float(np.nanmax(score[nearby]))
+        lines.at[idx, 'response_feature_score'] = local_score
+        lines.at[idx, 'response_feature'] = bool(local_score >= threshold)
+    return lines
+
 
 def _safe_divide(numerator, denominator):
     """Return numerator / denominator, using NaN where the ratio is undefined."""
@@ -381,6 +484,7 @@ def final_fit_and_metrics(
             spectrum.energy,
             spectrum.values,
             clean_lines,
+            response_sigma=spectrum.response_sigma,
         )
 
         # Use the spectral uncertainties as weights in the global fit.
@@ -807,6 +911,7 @@ class BlindLineSearchPipeline:
         # Load full spectrum
         # ------------------------------------------------------------
         spectrum_full = self._load_input(spectra_or_energy, y, sy)
+        self._active_spectrum = spectrum_full
 
         # ------------------------------------------------------------
         # Resolve nominal science window
@@ -863,6 +968,7 @@ class BlindLineSearchPipeline:
             spectrum.uncertainties,
             ylines,
             base,
+            response_sigma=spectrum.response_sigma,
         )
 
         # ------------------------------------------------------------
@@ -879,12 +985,23 @@ class BlindLineSearchPipeline:
 
         
 
+        synthetic_response_sigma = None
+        if spectrum.response_sigma is not None:
+            synthetic_response_sigma = np.interp(
+                simx,
+                spectrum.energy,
+                spectrum.response_sigma,
+                left=spectrum.response_sigma[0],
+                right=spectrum.response_sigma[-1],
+            )
+
         synthetic_candidates = return_raw_lines(
             simx,
             simy,
             simsy,
             simylines,
             simbase,
+            response_sigma=synthetic_response_sigma,
         )
 
         candidates = eval_line_probability_gmm(
@@ -949,6 +1066,11 @@ class BlindLineSearchPipeline:
             (clean_lines.center >= en1) & (clean_lines.center <= en2)
         ].reset_index(drop=True)
         clean_lines = _add_candidate_metrics(clean_lines)
+        clean_lines = _flag_response_features(
+            clean_lines,
+            self._active_spectrum,
+            self.config.response_feature_threshold,
+        )
 
         # Before the optional expensive global fit, force very significant
         # candidates to probability 1 if any S/N diagnostic is high. This
