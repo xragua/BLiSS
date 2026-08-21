@@ -38,23 +38,62 @@ class BlindLineSearchConfig:
     ----------
     en1, en2 : float
         Lower and upper energy limits used when selecting candidates.
+    energy_pad : float
+        Extra energy range added around the requested interval during
+        candidate detection and fitting.
+
     num_synthetic_simulations : int
-        Number of shuffled synthetic spectra generated for probability estimation.
+        Number of synthetic spectra generated for probability estimation.
+    synthetic_seed : int or None
+        Random seed used for synthetic-spectrum generation.
+
     final_fit_maxfev : int
-        Maximum number of function evaluations allowed in the final ``curve_fit``.
+        Maximum number of function evaluations allowed in the final
+        ``curve_fit``.
+
     snr_confidence_threshold : float
-        Any available S/N diagnostic above which a candidate is assigned probability 1.
+        Any available S/N diagnostic above which a candidate is assigned
+        probability 1.
+
     response_feature_threshold : float
-        Robust score above which unusually sharp ARF effective-area structure is flagged.
+        Robust score above which unusually sharp ARF effective-area
+        structure is flagged.
+
+    max_sigma_line : float
+        Maximum Gaussian sigma allowed for an individual line candidate,
+        in keV.
+
+    baseline_window : float
+        Preferred physical width, in keV, of the running-median window
+        used to estimate the empirical baseline.
+
+    max_range_fraction : float
+        Maximum baseline-window width as a fraction of the total energy
+        range of the input spectrum.
+
+    min_points : int
+        Minimum number of spectral points required inside a local
+        running-median window.
     """
+
     en1: float = 0.2
     en2: float = 10.0
     energy_pad: float = 0.1
+
     num_synthetic_simulations: int = 10
     synthetic_seed: Optional[int] = None
+
     final_fit_maxfev: int = 100000
     snr_confidence_threshold: float = 4.0
     response_feature_threshold: float = 5.0
+
+    # Line fitting
+    max_sigma_line: float = 0.1
+
+    # Empirical baseline
+    baseline_window: float = 0.4
+    max_range_fraction: float = 0.2
+    min_points: int = 3
 
 
 @dataclass
@@ -199,23 +238,42 @@ def _baseline_and_line_excess(
     spectrum: PreparedSpectrum,
     base: Optional[np.ndarray] = None,
     ylines: Optional[np.ndarray] = None,
+    max_sigma_line: float = 0.1,
+    sigma_factor: float = 4.0,
+    max_range_fraction: float = 0.2,
+    min_points: int = 3,
 ):
     """Return baseline and positive line excess for a prepared spectrum."""
+
     if base is None:
-        base = base_calculator(spectrum.values)
+        base = base_calculator(
+            spectrum.energy,
+            spectrum.values,
+            baseline_window=self.config.baseline_window,
+            max_range_fraction=self.config.max_range_fraction,
+            min_points=self.config.min_points,
+        )
+        
     else:
         base = np.asarray(base, dtype=float)
 
     if len(base) != len(spectrum.energy):
-        raise ValueError('base must have the same length as the spectrum.')
+        raise ValueError(
+            "base must have the same length as the spectrum."
+        )
 
     if ylines is None:
-        ylines = np.maximum(spectrum.values - base, 0)
+        ylines = np.maximum(
+            spectrum.values - base,
+            0,
+        )
     else:
         ylines = np.asarray(ylines, dtype=float)
 
     if len(ylines) != len(spectrum.energy):
-        raise ValueError('ylines must have the same length as the spectrum.')
+        raise ValueError(
+            "ylines must have the same length as the spectrum."
+        )
 
     return base, ylines
 
@@ -948,9 +1006,17 @@ class BlindLineSearchPipeline:
         # ------------------------------------------------------------
         # Baseline from the full spectrum
         # ------------------------------------------------------------
-        base_full = base_calculator(spectrum_full.values)
-        ylines_full = np.maximum(spectrum_full.values - base_full, 0)
+        base_full = base_calculator(
+            spectrum_full.energy,
+            spectrum_full.values,
+            baseline_window=self.config.baseline_window,
+            max_range_fraction=self.config.max_range_fraction,
+            min_points=self.config.min_points,
+        )
+        
 
+
+        ylines_full = np.maximum(spectrum_full.values - base_full,0)
         # ------------------------------------------------------------
         # Restrict search/fit arrays to padded interval
         # ------------------------------------------------------------

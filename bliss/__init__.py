@@ -5,7 +5,7 @@ from .spectrum_data.text_spectrum_loader import load_text_spectrum
 from .spectrum_data.fits_spectrum_loader import load_fits_spectrum
 from .spectrum_data.spectrum_container import Spectrum
 
-from .line_search.empirical_baseline import moving_average, base_calculator
+from .line_search.empirical_baseline import base_calculator
 from .line_search.peak_selection import find_peaks_new
 from .line_search.candidate_regions import CandidateRegionDetector, return_raw_lines
 from .line_search.gaussian_models import gaussian, n_gaussian, p0_generator, p0_generator_final
@@ -54,7 +54,6 @@ __all__ = [
     "rebin_bins",
     "rebin_snr",
     "rebin_resolution",
-    "moving_average",
     "base_calculator",
     "find_peaks_new",
     "CandidateRegionDetector",
