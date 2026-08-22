@@ -165,7 +165,7 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
             neginf=0.0
         )
     data = lines_sim_real[
-        ['peak_snr', 'ratio', 'area']
+        ['peak_snr', 'ratio', 'area','relative_power']
     ]
     scaler = StandardScaler()
     X = scaler.fit_transform(data)
