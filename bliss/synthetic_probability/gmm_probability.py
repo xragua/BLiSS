@@ -81,7 +81,7 @@ def real_probability(real_rate, sim_rate):
         return 0.0
     return max(0.0, min(1.0, (real_rate - sim_rate) / real_rate))
 
-def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covariance_types=('full',), show_plot=False):
+def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covariance_types=('full',), show_plot=False, n_sim=1):
     """Assign cluster-based reliability scores to observed candidate lines.
 
     Parameters
@@ -105,6 +105,9 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         Covariance structures considered during BIC model selection.
     show_plot : bool, default: False
         Whether to display the BIC diagnostic plot.
+    n_sim : int, default: 1
+        Number of synthetic realizations concatenated in ``simlines``; the
+        synthetic detection rate is normalised per realization.
 
     Returns
     -------
@@ -162,7 +165,7 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
             neginf=0.0
         )
     data = lines_sim_real[
-        ['amplitude', 'sigma', 'peak_snr', 'ratio', 'area_snr']
+        ['peak_snr', 'ratio', 'area']
     ]
     scaler = StandardScaler()
     X = scaler.fit_transform(data)
@@ -225,7 +228,7 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
     real_group = filtered_lines_sim_real[filtered_lines_sim_real.real == 1]
     sim_group = filtered_lines_sim_real[filtered_lines_sim_real.real == 0]
     real_rate = len(real_group) / (max(x) - min(x))
-    sim_rate = len(sim_group) / (max(simx) - min(simx))
+    sim_rate = len(sim_group) / ((max(simx) - min(simx)) * n_sim)
     cluster_probability = np.round(real_probability(real_rate, sim_rate), 2)
     lines_sim_real['cluster_probability'] = cluster_probability
     lines_real = lines_sim_real[lines_sim_real.real == 1]
@@ -235,7 +238,7 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         real_group = filtered_lines_sim_real[(filtered_lines_sim_real.gmm_label != j) & (filtered_lines_sim_real.real == 1)]
         sim_group = filtered_lines_sim_real[(filtered_lines_sim_real.gmm_label != j) & (filtered_lines_sim_real.real == 0)]
         real_rate = len(real_group) / (max(x) - min(x))
-        sim_rate = len(sim_group) / (max(simx) - min(simx))
+        sim_rate = len(sim_group) / ((max(simx) - min(simx)) * n_sim)
         lines_sim_real.loc[lines_sim_real.gmm_label == j, 'cluster_probability'] = cluster_probability
         cluster_probability = np.round(real_probability(real_rate, sim_rate), 2)
     return lines_sim_real[lines_sim_real.real == 1].reset_index(drop=True)

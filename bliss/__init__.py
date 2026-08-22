@@ -1,8 +1,7 @@
 """Public API for BLiSS spectral line-search tools."""
 
-from .spectrum_data.rebinning_tools import rebin_bins, rebin_snr, rebin_resolution
-from .spectrum_data.text_spectrum_loader import load_text_spectrum
-from .spectrum_data.fits_spectrum_loader import load_fits_spectrum
+from .spectrum_data.rebinning_tools import rebin_counts, apply_groups
+from .spectrum_data.fits_spectrum_loader import load_fits_spectrum, read_pha_metadata, align_to_spectrum
 from .spectrum_data.spectrum_container import Spectrum
 
 from .line_search.empirical_baseline import base_calculator
@@ -10,7 +9,9 @@ from .line_search.peak_selection import find_peaks_new
 from .line_search.candidate_regions import CandidateRegionDetector, return_raw_lines
 from .line_search.gaussian_models import gaussian, n_gaussian, p0_generator, p0_generator_final
 from .line_search.blind_line_search import (
+    BlindLineSearchConfig,
     BlindLineSearchPipeline,
+    NativeCounts,
     PreparedSpectrum,
     prepare_spectrum,
     find_candidate_lines,
@@ -18,11 +19,12 @@ from .line_search.blind_line_search import (
     fit_global,
     final_fit_and_metrics,
     plot_global_fit,
+    add_look_elsewhere_p
 )
 
 from .synthetic_probability.synthetic_spectra import (
-    SyntheticSpectrumGenerator,
-    calculate_synthetic_lines_spectra,
+    NullRealization,
+    generate_null_realizations,
 )
 from .synthetic_probability.gmm_probability import (
     GMMLineProbabilityEvaluator,
@@ -49,11 +51,12 @@ from .isis_interface import (
 __all__ = [
     "Spectrum",
     "PreparedSpectrum",
-    "load_text_spectrum",
+    "NativeCounts",
     "load_fits_spectrum",
-    "rebin_bins",
-    "rebin_snr",
-    "rebin_resolution",
+    "read_pha_metadata",
+    "align_to_spectrum",
+    "rebin_counts",
+    "apply_groups",
     "base_calculator",
     "find_peaks_new",
     "CandidateRegionDetector",
@@ -62,6 +65,7 @@ __all__ = [
     "n_gaussian",
     "p0_generator",
     "p0_generator_final",
+    "BlindLineSearchConfig",
     "BlindLineSearchPipeline",
     "prepare_spectrum",
     "find_candidate_lines",
@@ -69,8 +73,8 @@ __all__ = [
     "fit_global",
     "final_fit_and_metrics",
     "plot_global_fit",
-    "SyntheticSpectrumGenerator",
-    "calculate_synthetic_lines_spectra",
+    "NullRealization",
+    "generate_null_realizations",
     "GMMLineProbabilityEvaluator",
     "real_probability",
     "eval_line_probability_gmm",
@@ -85,4 +89,5 @@ __all__ = [
     "write_isis_files_from_bliss_results",
     "clean_zero_area_egauss_model",
     "run_bliss_for_isis",
+    "add_look_elsewhere_p"
 ]

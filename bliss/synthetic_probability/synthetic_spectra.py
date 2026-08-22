@@ -1,191 +1,187 @@
-"""Generate shuffled synthetic spectra for empirical false-positive estimation."""
+"""Generate null (line-free) synthetic spectra for BLiSS significance estimates.
+
+The null is generated in detector space: the empirical baseline measured on
+the rebinned spectrum is interpolated to the native channel grid, converted to
+expected counts (times exposure and channel width, plus the scaled background
+that was subtracted), and source and background counts are drawn from
+independent Poisson distributions. Each realization is then summed into the
+same bins as the data, converted to counts s^-1 keV^-1, and its empirical
+baseline is recomputed, so the non-linearity of the baseline estimator is
+propagated empirically into the null distribution. This is the detector-space
+analogue of ``fakeit`` with the empirical baseline as the model.
+
+A Gaussian model (fluctuations N(0, sigma_i) around the baseline on the
+rebinned grid) is retained only for validation and comparison.
+"""
+from __future__ import annotations
+from dataclasses import dataclass
 import numpy as np
 
-class SyntheticSpectrumGenerator:
-    """Generate shuffled synthetic spectra with the configured simulation settings.
+from ..line_search.empirical_baseline import base_calculator
+from ..spectrum_data.rebinning_tools import rebin_counts, apply_groups
 
-    Attributes
-    ----------
-    num_simulations : int
-        Number of synthetic spectra concatenated into the output arrays.
-    seed : int or None
-        Seed passed to NumPy's random generator for reproducibility.
-    z_score_th : float
-        Absolute z-score threshold above which residual outliers are replaced
-        before shuffling.
+
+# --------------------------------------------------------------------------
+# Single-realization generators
+# --------------------------------------------------------------------------
+
+def _gaussian_realization(rng, baseline, errors):
+    y_sim = baseline + rng.normal(loc=0.0, scale=errors)
+    return y_sim, errors.copy()
+
+
+def _poisson_realization(rng, mu_src, mu_bkg, bkg_scale, conv):
+    """Draw source and background counts and combine them like the loader.
+
+    Net value  : (S - s B) / conv
+    Uncertainty: sqrt(S + s^2 B) / conv   (quadrature, as in the loader)
+
+    A floor of one count is applied to the variance so that bins with zero
+    simulated counts keep a finite, positive uncertainty. This is the only
+    deliberate departure from the loader, which drops such bins.
     """
+    s_sim = rng.poisson(mu_src).astype(float)
+    b_sim = rng.poisson(mu_bkg).astype(float) if bkg_scale > 0 else np.zeros_like(s_sim)
+    y_sim = (s_sim - bkg_scale * b_sim) / conv
+    var = np.maximum(s_sim + bkg_scale ** 2 * b_sim, 1.0)
+    sy_sim = np.sqrt(var) / conv
+    return y_sim, sy_sim
 
-    def __init__(self, num_simulations=10, seed=None, z_score_th=4):
-        """Create a synthetic-spectrum generator.
 
-        Parameters
-        ----------
-        num_simulations : int, default: 2
-            Number of shuffled synthetic spectra to generate.
-        seed : int or None, default: None
-            Random seed used by ``numpy.random.default_rng``.
-        z_score_th : float, default: 4
-            Absolute z-score threshold used to replace strong residual outliers before
-            shuffling.
-        """
-        self.num_simulations = num_simulations
-        self.seed = seed
-        self.z_score_th = z_score_th
+# --------------------------------------------------------------------------
+# Null realizations that follow the full data chain (native -> rebin -> baseline)
+# --------------------------------------------------------------------------
 
-    def generate(self, t, c, sc):
-        """Generate synthetic spectra from one observed residual spectrum.
+@dataclass
+class NullRealization:
+    """One line-free realization on its own (possibly adaptive) grid,
+    restricted to the fit interval."""
+    energy: np.ndarray
+    values: np.ndarray
+    uncertainties: np.ndarray
+    baseline: np.ndarray
+    ylines: np.ndarray
+    response_sigma: np.ndarray | None
 
-        Parameters
-        ----------
-        t : array-like
-            Original coordinate grid.
-        c : array-like
-            Residual or line-excess values to shuffle.
-        sc : array-like
-            One-sigma uncertainties associated with ``c``.
 
-        Returns
-        -------
-        tuple of numpy.ndarray
-            Synthetic coordinate, value, and uncertainty arrays concatenating all
-            simulations.
-        """
-        return calculate_synthetic_lines_spectra(t, c, sc, self.num_simulations, self.seed, self.z_score_th)
+def generate_null_realizations(
+    spectrum_full,
+    base_full,
+    fit_en1,
+    fit_en2,
+    config,
+    *,
+    noise_model=None,
+):
+    """Generate null realizations that reproduce the data-processing chain.
 
-def calculate_synthetic_lines_spectra(t, c, sc, num_simulations, seed=None, z_score_th=4):
-    """Create shuffled synthetic residual spectra for false-positive estimation.
+    The null is Poisson at channel resolution: source and background counts
+    are drawn independently, summed into the *same* bins as the data
+    (``rebin_counts`` with the configured method), converted to density, and
+    the empirical baseline is recomputed on each realization. With
+    ``noise_model="gaussian"`` (validation only) fluctuations are instead drawn
+    as N(0, sigma_i) around the baseline on the rebinned grid.
+
+    The region simulated is the fit interval enlarged by one baseline window
+    on each side, so the recomputed baseline has the same edge behaviour as
+    the data baseline; each realization is then restricted to
+    ``[fit_en1, fit_en2]``.
 
     Parameters
     ----------
-    t : array-like
-        Original coordinate grid.
-    c : array-like
-        Residual values to shuffle after strong outliers are replaced.
-    sc : array-like
-        One-sigma uncertainties paired with ``c``.
-    num_simulations : int
-        Number of shuffled spectra to concatenate.
-    seed : int or None, default: None
-        Random seed for reproducible permutations and outlier replacements.
-    z_score_th : float, default: 4
-        Absolute z-score threshold defining residual outliers.
+    spectrum_full : PreparedSpectrum
+        Full rebinned spectrum in counts s^-1 keV^-1 as returned by
+        ``prepare_spectrum``, including its ``native`` count information.
+    base_full : numpy.ndarray
+        Empirical baseline of ``spectrum_full`` on its full grid.
+    fit_en1, fit_en2 : float
+        Padded search interval.
+    config : BlindLineSearchConfig
+        Supplies ``num_synthetic_simulations``, ``synthetic_seed``,
+        ``noise_model``, rebinning and baseline parameters.
+    noise_model : {'poisson', 'gaussian'} or None
+        Overrides ``config.noise_model``.
 
     Returns
     -------
-    tuple of numpy.ndarray
-        ``(tsim, simc, ssimc)`` containing concatenated synthetic coordinates,
-        shuffled residual values, and shuffled uncertainties.
+    list of NullRealization
+        One entry per realization. Grids may differ between entries when the
+        rebinning is adaptive (``'snr'``).
     """
-    rng = np.random.default_rng(seed)
-    t = np.asarray(t, dtype=np.float64)
-    c = np.asarray(c, dtype=np.float64)
-    sc = np.asarray(sc, dtype=np.float64)
-    resid = c.copy()
-    z_resid = (resid - np.mean(resid)) / np.std(resid)
-    outlier_mask = np.abs(z_resid) > z_score_th
-    safe_mask = np.abs(z_resid) < z_score_th
-    if np.any(outlier_mask) and np.any(safe_mask):
-        safe_vals = resid[safe_mask]
-        replace_vals = rng.choice(safe_vals, size=outlier_mask.sum(), replace=True)
-        resid[outlier_mask] = replace_vals
-    n = len(t)
-    total = n * num_simulations
-    tsim = np.zeros(total)
-    simc = np.zeros(total)
-    ssimc = np.zeros(total)
-    mean_diff_t = np.mean(np.diff(t))
-    mixed_diffs = np.concatenate([[mean_diff_t], np.diff(t)])
-    for k in range(num_simulations):
-        perm = rng.permutation(n)
-        start = k * n
-        end = start + n
-        shuffled_diffs = mixed_diffs[perm]
-        if np.max(tsim) > 1:
-            tsim[start] = np.max(tsim) + np.mean(np.diff(t))
-        if np.max(tsim) < 1:
-            tsim[start] = np.min(t)
-        tsim[start:end] = tsim[start] + np.cumsum(shuffled_diffs)
-        simc[start:end] = resid[perm]
-        ssimc[start:end] = sc[perm]
-    return (tsim, simc, ssimc)
+    native = getattr(spectrum_full, "native", None)
+    if native is None:
+        raise ValueError("spectrum_full has no native count information; "
+                         "build it with prepare_spectrum(pha, rmf, ...).")
+    model = str(config.noise_model if noise_model is None else noise_model).lower()
+    if model not in ("poisson", "gaussian"):
+        raise ValueError("noise_model must be 'poisson' or 'gaussian'.")
+    rng = np.random.default_rng(config.synthetic_seed)
+    margin = float(np.max(config.baseline_window))
+    n_sim = int(config.num_synthetic_simulations)
+    base_full = np.asarray(base_full, dtype=float)
 
+    def _finish(e, y, sy, resp_src_e, resp_src):
+        """Baseline, positive excess, response sigma, and cut to the interval."""
+        base = base_calculator(
+            e, y,
+            baseline_window=config.baseline_window,
+            max_range_fraction=config.max_range_fraction,
+            min_points=config.min_points,
+        )
+        ylines = np.maximum(y - base, 0.0)
+        resp = None
+        if resp_src is not None:
+            resp = np.interp(e, resp_src_e, resp_src,
+                             left=resp_src[0], right=resp_src[-1])
+        inside = (e >= fit_en1) & (e <= fit_en2)
+        return NullRealization(
+            energy=e[inside], values=y[inside], uncertainties=sy[inside],
+            baseline=base[inside], ylines=ylines[inside],
+            response_sigma=None if resp is None else resp[inside],
+        )
 
-def calculate_synthetic_noise_spectra(
-    t,
-    y,
-    sy,
-    base,
-    num_simulations,
-    seed=None,
-    noise_model="gaussian",
-):
-    """Create concatenated baseline-aware null spectra.
+    realizations = []
 
-    Returns
-    -------
-    simx, simy, simsy, simbase, simylines
-        Concatenated arrays for all simulations.
-    """
+    # ---------------------------------------------------------------- Poisson
+    if model == "poisson":
+        region = (native.energy >= fit_en1 - margin) & (native.energy <= fit_en2 + margin)
+        if not np.any(region):
+            raise ValueError("No native channels in the simulation region.")
+        e_nat = native.energy[region]
+        de_nat = native.bin_width[region]
+        bkg = np.clip(native.bkg_counts[region], 0.0, None)
+        group_nat = native.group[region]
+        s = float(native.bkg_scale)
+        T = float(native.exposure)
 
-    rng = np.random.default_rng(seed)
+        # Line-free expectation per native channel: rebinned baseline (density)
+        # interpolated to the channel grid, times T*dE, plus the scaled
+        # background that the loader subtracted.
+        mu_density = np.interp(e_nat, spectrum_full.energy, base_full)
+        mu_src = np.clip(mu_density * T * de_nat + s * bkg, 0.0, None)
 
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-    sy = np.asarray(sy, dtype=float)
-    base = np.asarray(base, dtype=float)
+        for _ in range(n_sim):
+            net, unc = _poisson_realization(rng, mu_src, bkg, s, np.ones_like(mu_src))
+            if config.rebin_method == "snr":
+                e, n, sn, de, _g = rebin_counts(
+                    e_nat, net, unc, de_nat, method="snr",
+                    scale=config.rebin_scale, min_bins=config.rebin_min_bins)
+            else:
+                e, n, sn, de = apply_groups(e_nat, net, unc, de_nat, group_nat)
+            conv = T * de
+            realizations.append(_finish(e, n / conv, sn / conv,
+                                        native.energy, native.response_sigma))
 
-    if not (len(t) == len(y) == len(sy) == len(base)):
-        raise ValueError("t, y, sy, and base must have the same length.")
-
-    n = len(t)
-    num_simulations = int(num_simulations)
-
-    if n == 0 or num_simulations <= 0:
-        empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty
-
-    if n > 1:
-        dx = np.nanmedian(np.diff(t))
-        if not np.isfinite(dx) or dx <= 0:
-            dx = 1.0
-
-        span = np.nanmax(t) - np.nanmin(t)
-        if not np.isfinite(span) or span <= 0:
-            span = n * dx
+    # --------------------------------------------------------------- Gaussian
     else:
-        dx = 1.0
-        span = 1.0
+        e_all = np.asarray(spectrum_full.energy, dtype=float)
+        region = (e_all >= fit_en1 - margin) & (e_all <= fit_en2 + margin)
+        e = e_all[region]
+        base_r = base_full[region]
+        err_r = np.asarray(spectrum_full.uncertainties, dtype=float)[region]
+        resp_src = getattr(spectrum_full, "response_sigma", None)
+        for _ in range(n_sim):
+            y, sy = _gaussian_realization(rng, base_r, err_r)
+            realizations.append(_finish(e, y, sy, e_all, resp_src))
 
-    # Gap between simulations so they do not overlap in simx.
-    offset_step = span + 5.0 * dx
-
-    simx = np.empty(n * num_simulations, dtype=float)
-    simy = np.empty(n * num_simulations, dtype=float)
-    simsy = np.empty(n * num_simulations, dtype=float)
-    simbase = np.empty(n * num_simulations, dtype=float)
-    simylines = np.empty(n * num_simulations, dtype=float)
-
-    if noise_model != "gaussian":
-        raise ValueError("For now use noise_model='gaussian'.")
-
-    for k in range(num_simulations):
-        start = k * n
-        end = start + n
-
-        noise = rng.normal(loc=0.0, scale=sy)
-
-        y_sim = base + noise
-        ylines_sim = np.maximum(y_sim - base, 0.0)
-
-        # Important: avoid joining candidate blocks between simulations.
-        if n > 1:
-            ylines_sim[0] = 0.0
-            ylines_sim[-1] = 0.0
-
-        simx[start:end] = t + k * offset_step
-        simy[start:end] = y_sim
-        simsy[start:end] = sy
-        simbase[start:end] = base
-        simylines[start:end] = ylines_sim
-
-    return simx, simy, simsy, simbase, simylines
+    return realizations

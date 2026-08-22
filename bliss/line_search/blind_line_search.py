@@ -1,6 +1,6 @@
 """High-level BLiSS emission-line search pipeline."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -10,24 +10,28 @@ from scipy.optimize import curve_fit
 from .empirical_baseline import base_calculator
 from .candidate_regions import return_raw_lines
 from .gaussian_models import n_gaussian, p0_generator_final
-from ..synthetic_probability.synthetic_spectra import calculate_synthetic_noise_spectra
+from ..synthetic_probability.synthetic_spectra import generate_null_realizations
 from ..synthetic_probability.gmm_probability import eval_line_probability_gmm
 from ..plotting.run_output_manager import ensure_output_folder
+from ..spectrum_data.fits_spectrum_loader import (
+    load_fits_spectrum,
+    read_pha_metadata,
+    align_to_spectrum,
+)
+from ..spectrum_data.rebinning_tools import rebin_counts
 
 LINE_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability', 'response_feature', 'response_feature_score'
-]
+    'snr_area', 'ew', 'cluster_probability',] #'response_feature', 'response_feature_score']
 
 CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
 FINAL_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability', 'response_feature', 'response_feature_score', 'fit_error_flag'
-]
+    'snr_area', 'ew', 'cluster_probability',] #'response_feature', 'response_feature_score', 'fit_error_flag']
 
 
 @dataclass
@@ -63,6 +67,15 @@ class BlindLineSearchConfig:
         Maximum Gaussian sigma allowed for an individual line candidate,
         in keV.
 
+    noise_model : {'poisson', 'gaussian'}
+        Statistical model of the synthetic null spectra. ``'poisson'`` draws
+        counts at channel resolution (default); ``'gaussian'`` is kept only
+        for validation/comparison and should not be used for science results.
+
+    rebin_method, rebin_scale, rebin_min_bins
+        Count-conserving rebinning applied to the native spectrum before the
+        search and to every synthetic null realization (see ``rebin_counts``).
+
     baseline_window : float
         Preferred physical width, in keV, of the running-median window
         used to estimate the empirical baseline.
@@ -84,7 +97,7 @@ class BlindLineSearchConfig:
     synthetic_seed: Optional[int] = None
 
     final_fit_maxfev: int = 100000
-    snr_confidence_threshold: float = 4.0
+    snr_confidence_threshold: float = 1e100
     response_feature_threshold: float = 5.0
 
     # Line fitting
@@ -94,6 +107,15 @@ class BlindLineSearchConfig:
     baseline_window: float = 0.4
     max_range_fraction: float = 0.2
     min_points: int = 3
+
+    # Synthetic noise
+    noise_model: str = "poisson"       # 'poisson' (default) | 'gaussian' (validation only)
+
+    # Rebinning applied to count spectra (and to every null realization)
+    rebin_method: str = "none"          # 'none' | 'bins' | 'snr' | 'resolution'
+    rebin_scale: Optional[float] = None
+    rebin_min_bins: int = 1
+
 
 
 @dataclass
@@ -124,138 +146,177 @@ class PreparedSpectrum:
     response_sigma: Optional[np.ndarray] = None
     arf_energy: Optional[np.ndarray] = None
     effective_area: Optional[np.ndarray] = None
+    native: Optional["NativeCounts"] = None
 
-
-def prepare_spectrum(spectra_or_energy, y=None, sy=None, bin_width=None) -> PreparedSpectrum:
-    """Load and sort spectrum data from a file, arrays, or a Spectrum-like object.
-
-    Parameters
+@dataclass
+class NativeCounts:
+    """Channel-resolution count information kept alongside a density spectrum.
+    Attributes
     ----------
-    spectra_or_energy : str, pathlib.Path, Spectrum-like object, or array-like
-        Four-column text spectrum file, an object with ``energy``, ``values`` and
-        ``uncertainties`` attributes, or the coordinate array for direct array input.
-    y : array-like or None, default: None
-        Spectral values for direct array input.
-    sy : array-like or None, default: None
-        One-sigma uncertainties for direct array input.
-    bin_width : array-like or None, default: None
-        Optional bin widths for direct array input. If omitted, they are estimated
-        from adjacent coordinate spacing.
-
-    Returns
-    -------
-    PreparedSpectrum
-        Spectrum sorted by increasing coordinate value.
+    energy, bin_width : numpy.ndarray
+        Native channel centres and widths (keV).
+    counts, uncertainties : numpy.ndarray
+        Native (net) counts and their uncertainties, as loaded.
+    bkg_counts : numpy.ndarray
+        Raw background counts per native channel (zeros if no background).
+    bkg_scale : float
+        Factor applied to background counts before subtraction.
+    exposure : float
+        Exposure time in seconds.
+    response_sigma : numpy.ndarray or None
+        Instrumental sigma on the native grid.
+    group : numpy.ndarray of int
+        Output-bin index of each native channel after rebinning (-1 = dropped).
     """
-    if isinstance(spectra_or_energy, (str, Path)):
-        spectra = pd.read_csv(
-            spectra_or_energy,
-            sep='\\s+',
-            comment='#',
-            header=None,
-            engine='python',
-        )
-        if spectra.shape[1] != 4:
-            raise ValueError('File must have 4 columns: E_low, E_high, counts, error.')
-        x = np.asarray((spectra[0] + spectra[1]) / 2.0)
-        dE = np.asarray(spectra[1] - spectra[0])
-        y = np.asarray(spectra[2])
-        sy = np.asarray(spectra[3])
-        response_sigma = None
-        arf_energy = None
-        effective_area = None
-    elif all(hasattr(spectra_or_energy, attr) for attr in ('energy', 'values', 'uncertainties')):
-        x = np.asarray(spectra_or_energy.energy)
-        y = np.asarray(spectra_or_energy.values)
-        sy = np.asarray(spectra_or_energy.uncertainties)
-        dE_obj = getattr(spectra_or_energy, 'bin_width', None)
-        if dE_obj is None:
-            dE = _estimate_bin_width(x)
-        else:
-            dE = np.asarray(dE_obj)
-        response_sigma_obj = getattr(spectra_or_energy, 'response_sigma', None)
-        response_sigma = None if response_sigma_obj is None else np.asarray(response_sigma_obj, dtype=float)
-        arf_energy_obj = getattr(spectra_or_energy, 'arf_energy', None)
-        effective_area_obj = getattr(spectra_or_energy, 'effective_area', None)
-        arf_energy = None if arf_energy_obj is None else np.asarray(arf_energy_obj, dtype=float)
-        effective_area = None if effective_area_obj is None else np.asarray(effective_area_obj, dtype=float)
-    else:
-        x = np.asarray(spectra_or_energy)
-        if y is None or sy is None:
-            raise ValueError('If using direct arrays, y and sy must be provided.')
-        y = np.asarray(y)
-        sy = np.asarray(sy)
-        if bin_width is None:
-            dE = _estimate_bin_width(x)
-        else:
-            dE = np.asarray(bin_width)
-        response_sigma = None
-        arf_energy = None
-        effective_area = None
+    energy: np.ndarray
+    bin_width: np.ndarray
+    counts: np.ndarray
+    uncertainties: np.ndarray
+    bkg_counts: np.ndarray
+    bkg_scale: float
+    exposure: float
+    response_sigma: Optional[np.ndarray]
+    group: np.ndarray
 
-    if not (len(x) == len(y) == len(sy) == len(dE)):
-        raise ValueError('energy, values, uncertainties, and bin_width must have the same length.')
 
-    if response_sigma is not None and len(response_sigma) != len(x):
-        raise ValueError('response_sigma must have the same length as the spectrum.')
-    if (arf_energy is None) != (effective_area is None):
-        raise ValueError('arf_energy and effective_area must either both be provided or both be None.')
-    if arf_energy is not None and len(arf_energy) != len(effective_area):
-        raise ValueError('arf_energy and effective_area must have the same length.')
+def prepare_spectrum(
+    pha_path,
+    rmf_path,
+    arf_path=None,
+    background_path=None,
+    *,
+    rebin_method: str = "none",
+    rebin_scale: Optional[float] = None,
+    rebin_min_bins: int = 1,
+) -> PreparedSpectrum:
+    """Load a PHA spectrum, rebin it conserving counts, and convert to density.
 
-    valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(sy) & np.isfinite(dE) & (sy > 0)
-    x = x[valid]
-    y = y[valid]
-    sy = sy[valid]
-    dE = dE[valid]
-    if response_sigma is not None:
-        response_sigma = response_sigma[valid]
-
-    order = np.argsort(x)
-    return PreparedSpectrum(
-        energy=x[order],
-        values=y[order],
-        uncertainties=sy[order],
-        bin_width=dE[order],
-        response_sigma=None if response_sigma is None else response_sigma[order],
-        arf_energy=arf_energy,
-        effective_area=effective_area,
+    The returned ``PreparedSpectrum`` is in counts s^-1 keV^-1 on the rebinned
+    grid. Its ``native`` attribute keeps the channel-resolution counts,
+    background and grouping needed to generate Poisson null realizations that
+    follow exactly the same rebinning.
+    """
+    spectrum = load_fits_spectrum(
+        pha_path=pha_path,
+        background_path=background_path,
+        rmf_path=rmf_path,
+        arf_path=arf_path,
+    )
+    meta = align_to_spectrum(
+        read_pha_metadata(pha_path, rmf_path, background_path),
+        spectrum.energy,
     )
 
+    exposure = float(meta["exposure"])
+    if not np.isfinite(exposure) or exposure <= 0:
+        raise ValueError("PHA file has no valid EXPOSURE keyword.")
 
-def _estimate_bin_width(x: np.ndarray) -> np.ndarray:
-    """Estimate bin widths from a one-dimensional coordinate grid."""
-    x = np.asarray(x, dtype=float)
-    if len(x) == 0:
-        return np.array([], dtype=float)
-    if len(x) == 1:
-        return np.ones_like(x, dtype=float)
-    dE = np.diff(x)
-    return np.append(dE, dE[-1])
+    # Native (net) counts. The loader returns the column as stored: counts,
+    # or counts/s for RATE columns.
+    if meta["values_unit"] == "rate":
+        counts = spectrum.values * exposure
+        counts_unc = spectrum.uncertainties * exposure
+    else:
+        counts = spectrum.values.copy()
+        counts_unc = spectrum.uncertainties.copy()
 
+    # Count-conserving rebinning
+    e_new, n_new, s_new, de_new, group = rebin_counts(
+        spectrum.energy, counts, counts_unc, spectrum.bin_width,
+        method=rebin_method, scale=rebin_scale, min_bins=rebin_min_bins,
+    )
+
+    # Density: counts s^-1 keV^-1
+    conv = exposure * de_new
+    values = n_new / conv
+    uncertainties = s_new / conv
+
+    response_sigma = None
+    if spectrum.response_sigma is not None:
+        response_sigma = np.interp(
+            e_new, spectrum.energy, spectrum.response_sigma,
+            left=spectrum.response_sigma[0], right=spectrum.response_sigma[-1],
+        )
+
+    native = NativeCounts(
+        energy=spectrum.energy,
+        bin_width=spectrum.bin_width,
+        counts=counts,
+        uncertainties=counts_unc,
+        bkg_counts=np.asarray(meta["bkg_counts"], dtype=float),
+        bkg_scale=float(meta["bkg_scale"]),
+        exposure=exposure,
+        response_sigma=spectrum.response_sigma,
+        group=group,
+    )
+
+    return PreparedSpectrum(
+        energy=e_new,
+        values=values,
+        uncertainties=uncertainties,
+        bin_width=de_new,
+        response_sigma=response_sigma,
+        arf_energy=spectrum.arf_energy,
+        effective_area=spectrum.effective_area,
+        native=native,
+    )
 
 def _baseline_and_line_excess(
     spectrum: PreparedSpectrum,
     base: Optional[np.ndarray] = None,
     ylines: Optional[np.ndarray] = None,
-    max_sigma_line: float = 0.1,
-    sigma_factor: float = 4.0,
+    baseline_window: float | np.ndarray = 0.4,
     max_range_fraction: float = 0.2,
     min_points: int = 3,
 ):
-    """Return baseline and positive line excess for a prepared spectrum."""
+    """Return empirical baseline and positive line excess.
+
+    Parameters
+    ----------
+    spectrum : PreparedSpectrum
+        Prepared input spectrum.
+
+    base : array-like or None, default=None
+        User-provided baseline. If omitted, the empirical BLiSS
+        baseline is calculated from the spectrum.
+
+    ylines : array-like or None, default=None
+        User-provided positive-excess spectrum. If omitted, it is
+        calculated as ``max(values - baseline, 0)``.
+
+    baseline_window : float or array-like, default=0.4
+        Running-median width in physical energy units.
+
+    max_range_fraction : float, default=0.2
+        Maximum baseline-window width as a fraction of the
+        available energy range.
+
+    min_points : int, default=3
+        Minimum number of points required inside the local
+        running-median window.
+
+    Returns
+    -------
+    base, ylines : numpy.ndarray
+        Empirical baseline and positive-excess spectrum.
+    """
 
     if base is None:
+
         base = base_calculator(
             spectrum.energy,
             spectrum.values,
-            baseline_window=self.config.baseline_window,
-            max_range_fraction=self.config.max_range_fraction,
-            min_points=self.config.min_points,
+            baseline_window=baseline_window,
+            max_range_fraction=max_range_fraction,
+            min_points=min_points,
         )
-        
+
     else:
-        base = np.asarray(base, dtype=float)
+
+        base = np.asarray(
+            base,
+            dtype=float,
+        )
 
     if len(base) != len(spectrum.energy):
         raise ValueError(
@@ -263,12 +324,18 @@ def _baseline_and_line_excess(
         )
 
     if ylines is None:
+
         ylines = np.maximum(
             spectrum.values - base,
-            0,
+            0.0,
         )
+
     else:
-        ylines = np.asarray(ylines, dtype=float)
+
+        ylines = np.asarray(
+            ylines,
+            dtype=float,
+        )
 
     if len(ylines) != len(spectrum.energy):
         raise ValueError(
@@ -497,8 +564,6 @@ def _ensure_line_context(
             clean_lines[col] = np.nan
 
     return clean_lines
-
-
 
 
 def final_fit_and_metrics(
@@ -817,13 +882,69 @@ def plot_global_fit(
     else:
         plt.close()
 
+
+def add_look_elsewhere_p(
+    lines: pd.DataFrame,
+    synthetic_candidates: pd.DataFrame,
+    n_sim: int,
+    column: str = "amplitude",
+) -> pd.DataFrame:
+    """Add a Monte Carlo global (look-elsewhere) p-value for each line.
+
+    For every line, count the null realizations in which at least one
+    synthetic candidate anywhere in the search interval has ``column``
+    greater than or equal to the line's value. Realizations with no
+    candidate at all count as non-exceeding. The p-value uses the standard
+    Monte Carlo estimator ``(k + 1) / (n_sim + 1)``, so it is never exactly
+    zero; its resolution is set by ``n_sim``.
+
+    Parameters
+    ----------
+    lines : pandas.DataFrame
+        Candidate or fitted line table containing ``column``.
+    synthetic_candidates : pandas.DataFrame
+        Synthetic candidate table with a ``sim`` column
+        (``BlindLineSearchPipeline.synthetic_candidates``).
+    n_sim : int
+        Number of null realizations generated
+        (``BlindLineSearchPipeline.n_sim``).
+    column : str, default "amplitude"
+        Statistic compared, e.g. ``"amplitude"``, ``"area"``, ``"snr_peak"``,
+        ``"snr_area"``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copy of ``lines`` with ``n_exceed_<column>`` and ``p_global_<column>``.
+    """
+    lines = lines.copy()
+    if column not in lines.columns:
+        raise ValueError(f"'{column}' is not a column of the line table.")
+
+    synth = synthetic_candidates
+    if synth is None or len(synth) == 0:
+        per_sim_max = np.array([], dtype=float)
+    else:
+        if column not in synth.columns:
+            synth = _add_candidate_metrics(synth)
+        if "sim" not in synth.columns:
+            raise ValueError("synthetic_candidates must have a 'sim' column.")
+        per_sim_max = synth.groupby("sim")[column].max().to_numpy(dtype=float)
+        per_sim_max = per_sim_max[np.isfinite(per_sim_max)]
+
+    values = pd.to_numeric(lines[column], errors="coerce").to_numpy(dtype=float)
+    k = np.array([np.sum(per_sim_max >= v) if np.isfinite(v) else n_sim for v in values])
+
+    lines[f"n_exceed_{column}"] = k
+    lines[f"p_global_{column}"] = (k + 1) / (n_sim + 1)
+    return lines
+
+
+
 def fit_global(
     pd_lines: pd.DataFrame,
-    spectra_or_energy,
-    y=None,
-    sy=None,
+    spectrum: PreparedSpectrum,
     *,
-    bin_width=None,
     base: Optional[np.ndarray] = None,
     ylines: Optional[np.ndarray] = None,
     show_plot: bool = True,
@@ -843,12 +964,9 @@ def fit_global(
     ----------
     pd_lines : pandas.DataFrame
         Candidate-line table after any user-defined filtering.
-    spectra_or_energy : str, pathlib.Path, Spectrum-like object, or array-like
-        Same spectrum input accepted by the main BLiSS pipeline.
-    y, sy : array-like or None, default: None
-        Spectral values and uncertainties for direct array input.
-    bin_width : array-like or None, default: None
-        Optional bin widths for direct array input.
+    spectrum : PreparedSpectrum
+        Spectrum returned by ``prepare_spectrum`` with the same rebinning used
+        for the candidate search.
     base, ylines : numpy.ndarray or None, default: None
         Optional precomputed baseline and baseline-subtracted excess spectrum.
     show_plot : bool, default: True
@@ -877,13 +995,6 @@ def fit_global(
     pandas.DataFrame or tuple
         Final fitted line table, optionally with the fitted line-only model.
     """
-
-    spectrum = prepare_spectrum(
-        spectra_or_energy,
-        y=y,
-        sy=sy,
-        bin_width=bin_width,
-    )
 
     base, ylines = _baseline_and_line_excess(
         spectrum,
@@ -944,9 +1055,10 @@ class BlindLineSearchPipeline:
 
     def run(
         self,
-        spectra_or_energy,
-        y=None,
-        sy=None,
+        pha,
+        rmf,
+        arf=None,
+        bkg=None,
         *,
         en1: Optional[float] = None,
         en2: Optional[float] = None,
@@ -956,7 +1068,11 @@ class BlindLineSearchPipeline:
         output_dir=None,
         plot_name: str = 'bliss_fit.png',
     ) -> pd.DataFrame:
-        """Execute the BLiSS workflow.The empirical baseline is computed from the full input spectrum.
+        """Execute the BLiSS workflow on a PHA spectrum.
+
+        ``pha`` and ``rmf`` are required; ``arf`` and ``bkg`` are optional.
+        The spectrum is rebinned conserving counts according to the config and
+        converted to counts s^-1 keV^-1. The empirical baseline is computed from the full input spectrum.
         Candidate detection, local Gaussian fitting, probability estimation,
         and the optional global fit are performed inside the selected energy
         interval enlarged by ``energy_pad``. The returned catalogue is finally
@@ -968,7 +1084,12 @@ class BlindLineSearchPipeline:
         # ------------------------------------------------------------
         # Load full spectrum
         # ------------------------------------------------------------
-        spectrum_full = self._load_input(spectra_or_energy, y, sy)
+        spectrum_full = prepare_spectrum(
+            pha, rmf, arf, bkg,
+            rebin_method=self.config.rebin_method,
+            rebin_scale=self.config.rebin_scale,
+            rebin_min_bins=self.config.rebin_min_bins,
+        )
         self._active_spectrum = spectrum_full
 
         # ------------------------------------------------------------
@@ -1013,8 +1134,6 @@ class BlindLineSearchPipeline:
             max_range_fraction=self.config.max_range_fraction,
             min_points=self.config.min_points,
         )
-        
-
 
         ylines_full = np.maximum(spectrum_full.values - base_full,0)
         # ------------------------------------------------------------
@@ -1038,45 +1157,47 @@ class BlindLineSearchPipeline:
         )
 
         # ------------------------------------------------------------
-        # Synthetic residual spectra in the same padded interval
+        # Null realizations: same rebinning, baseline and detection
+        # chain as the data, one candidate table per realization
         # ------------------------------------------------------------
-        simx, simy, simsy, simbase, simylines = calculate_synthetic_noise_spectra(
-            spectrum.energy,
-            spectrum.values,
-            spectrum.uncertainties,
-            base,
-            self.config.num_synthetic_simulations,
-            seed=self.config.synthetic_seed,
+        null_realizations = generate_null_realizations(
+            spectrum_full,
+            base_full,
+            fit_en1,
+            fit_en2,
+            self.config,
         )
 
-        
-
-        synthetic_response_sigma = None
-        if spectrum.response_sigma is not None:
-            synthetic_response_sigma = np.interp(
-                simx,
-                spectrum.energy,
-                spectrum.response_sigma,
-                left=spectrum.response_sigma[0],
-                right=spectrum.response_sigma[-1],
+        synthetic_tables = []
+        for k, null in enumerate(null_realizations):
+            cand = return_raw_lines(
+                null.energy,
+                null.values,
+                null.uncertainties,
+                null.ylines,
+                null.baseline,
+                response_sigma=null.response_sigma,
             )
+            cand["sim"] = k
+            synthetic_tables.append(cand)
 
-        synthetic_candidates = return_raw_lines(
-            simx,
-            simy,
-            simsy,
-            simylines,
-            simbase,
-            response_sigma=synthetic_response_sigma,
+        synthetic_candidates = (
+            pd.concat(synthetic_tables, ignore_index=True)
+            if synthetic_tables
+            else pd.DataFrame(columns=raw_candidates.columns)
         )
+
+
+        self.synthetic_candidates = _add_candidate_metrics(synthetic_candidates)
+        self.n_sim = max(1, len(null_realizations))  
 
         candidates = eval_line_probability_gmm(
             raw_candidates,
             synthetic_candidates,
-            simx=simx,
+            simx=spectrum.energy,
             x=spectrum.energy,
+            n_sim=max(1, len(null_realizations)),
         )
-
         # ------------------------------------------------------------
         # Final catalogue restricted to the nominal science window
         # ------------------------------------------------------------
@@ -1121,10 +1242,6 @@ class BlindLineSearchPipeline:
 
         self._write_outputs(result, output_dir)
         return result
-    def _load_input(self, spectra_or_energy, y=None, sy=None) -> PreparedSpectrum:
-        """Load and sort spectrum data from a file or direct arrays."""
-        return prepare_spectrum(spectra_or_energy, y=y, sy=sy)
-
     def _select_candidates(self, candidates: pd.DataFrame, *, en1: float, en2: float) -> pd.DataFrame:
         """Restrict candidate lines to the requested energy interval."""
         clean_lines = candidates.copy()
@@ -1204,55 +1321,97 @@ class BlindLineSearchPipeline:
             handle.write(f'Number of fitted candidates: {len(result)}\n')
 
 
+def _build_config(
+    config, en1, en2, energy_pad, rebin_method, rebin_scale, rebin_min_bins,
+    num_synthetic_simulations, synthetic_seed,
+):
+    if config is None:
+        config = BlindLineSearchConfig()
+    config = replace(
+        config,
+        en1=en1, en2=en2, energy_pad=energy_pad,
+        rebin_method=rebin_method, rebin_scale=rebin_scale,
+        rebin_min_bins=rebin_min_bins,
+    )
+    if num_synthetic_simulations is not None:
+        config = replace(config, num_synthetic_simulations=num_synthetic_simulations)
+    if synthetic_seed is not None:
+        config = replace(config, synthetic_seed=synthetic_seed)
+    return config
+
+
 def find_candidate_lines(
-    spectra_or_energy,
-    y=None,
-    sy=None,
+    pha,
+    rmf,
+    arf=None,
+    bkg=None,
+    *,
     en1=0,
     en2=10,
     energy_pad=0.0,
     output_dir=None,
+    rebin_method="none",
+    rebin_scale=None,
+    rebin_min_bins=1,
+    num_synthetic_simulations=None,
+    synthetic_seed=None,
+    config: Optional[BlindLineSearchConfig] = None,
 ):
-    """Run BLiSS only up to candidate detection/probability estimation."""
-    config = BlindLineSearchConfig(
-        en1=en1,
-        en2=en2,
-        energy_pad=energy_pad,
+    """Run BLiSS up to candidate detection and probability estimation.
+
+    Parameters
+    ----------
+    pha, rmf : path-like
+        Source spectrum and its redistribution matrix (required).
+    arf, bkg : path-like or None
+        Optional effective-area file and background spectrum.
+    en1, en2, energy_pad : float
+        Search interval and internal padding.
+    rebin_method, rebin_scale, rebin_min_bins
+        Count-conserving rebinning applied to the data and to every synthetic
+        null realization (see ``rebin_counts``).
+    num_synthetic_simulations, synthetic_seed
+        Number of null realizations and random seed.
+    config : BlindLineSearchConfig or None
+        Full configuration; the keywords above override its values.
+    """
+    config = _build_config(
+        config, en1, en2, energy_pad, rebin_method, rebin_scale, rebin_min_bins,
+        num_synthetic_simulations, synthetic_seed,
     )
     pipeline = BlindLineSearchPipeline(config=config)
-    return pipeline.run(
-        spectra_or_energy,
-        y=y,
-        sy=sy,
-        final_fit=False,
-        output_dir=output_dir,
-    )
+    return pipeline.run(pha, rmf, arf, bkg, final_fit=False, output_dir=output_dir)
 
 
 def find_emission_lines(
-    spectra_or_energy,
-    y=None,
-    sy=None,
+    pha,
+    rmf,
+    arf=None,
+    bkg=None,
+    *,
     en1=0,
     en2=10,
     energy_pad=0.0,
     show_plot=False,
     output_dir=None,
     plot_name='bliss_fit.png',
-    *,
     final_fit: bool = False,
+    rebin_method="none",
+    rebin_scale=None,
+    rebin_min_bins=1,
+    num_synthetic_simulations=None,
+    synthetic_seed=None,
+    config: Optional[BlindLineSearchConfig] = None,
 ):
-    """Run the default BLiSS emission-line search."""
-    config = BlindLineSearchConfig(
-        en1=en1,
-        en2=en2,
-        energy_pad=energy_pad,
+    """Run the default BLiSS emission-line search (see ``find_candidate_lines``
+    for the input options)."""
+    config = _build_config(
+        config, en1, en2, energy_pad, rebin_method, rebin_scale, rebin_min_bins,
+        num_synthetic_simulations, synthetic_seed,
     )
     pipeline = BlindLineSearchPipeline(config=config)
     return pipeline.run(
-        spectra_or_energy,
-        y=y,
-        sy=sy,
+        pha, rmf, arf, bkg,
         final_fit=final_fit,
         show_plot=show_plot,
         output_dir=output_dir,
