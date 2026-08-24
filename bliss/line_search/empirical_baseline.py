@@ -15,8 +15,12 @@ def choose_baseline_window(
     energy : array-like
         Spectral energy grid.
 
-    baseline_window : float or array-like, default=0.4
+    baseline_window : float, array-like, or callable, default=0.4
         Preferred running-median width in the same units as energy.
+        A callable ``f(energy)`` is evaluated on the input grid, so the
+        same configuration works on grids of different lengths (e.g.
+        data and synthetic null realizations). A static array must have
+        the same shape as ``energy``.
 
     max_range_fraction : float, default=0.2
         Maximum allowed window as a fraction of the total
@@ -36,6 +40,11 @@ def choose_baseline_window(
         raise ValueError(
             "energy must contain at least two finite values."
         )
+
+    # Optionally an energy-dependent window given as a callable:
+    # evaluate it on the grid the baseline will be computed on.
+    if callable(baseline_window):
+        baseline_window = baseline_window(energy)
 
     energy_range = (
         np.nanmax(energy[finite])
@@ -277,7 +286,9 @@ def base_calculator(
     """Estimate the BLiSS empirical baseline from spectral shape.
 
     The baseline is obtained with a running median whose width is
-    defined directly in physical spectral units.
+    defined directly in physical spectral units. The width may be a
+    scalar, an array with one value per energy point, or a callable
+    ``f(energy)`` evaluated on the input grid (energy-dependent window).
 
     The baseline scale is independent of the maximum Gaussian width
     allowed during line fitting.

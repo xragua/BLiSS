@@ -116,7 +116,10 @@ def generate_null_realizations(
     if model not in ("poisson", "gaussian"):
         raise ValueError("noise_model must be 'poisson' or 'gaussian'.")
     rng = np.random.default_rng(config.synthetic_seed)
-    margin = float(np.max(config.baseline_window))
+    w = config.baseline_window
+    if callable(w):
+        w = w(np.asarray(spectrum_full.energy, dtype=float))
+    margin = float(np.max(w))
     n_sim = int(config.num_synthetic_simulations)
     base_full = np.asarray(base_full, dtype=float)
 
@@ -127,7 +130,7 @@ def generate_null_realizations(
             baseline_window=config.baseline_window,
             max_range_fraction=config.max_range_fraction,
             min_points=config.min_points,
-        )
+        ) 
         ylines = np.maximum(y - base, 0.0)
         resp = None
         if resp_src is not None:

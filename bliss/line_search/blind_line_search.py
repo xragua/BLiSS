@@ -76,9 +76,11 @@ class BlindLineSearchConfig:
         Count-conserving rebinning applied to the native spectrum before the
         search and to every synthetic null realization (see ``rebin_counts``).
 
-    baseline_window : float
+    baseline_window : float, array-like, or callable
         Preferred physical width, in keV, of the running-median window
-        used to estimate the empirical baseline.
+        used to estimate the empirical baseline. A callable ``f(energy)``
+        is evaluated on every grid where a baseline is computed (data and
+        each null realization), enabling energy-dependent windows.
 
     max_range_fraction : float
         Maximum baseline-window width as a fraction of the total energy
@@ -573,13 +575,25 @@ def final_fit_and_metrics(
     ylines: Optional[np.ndarray] = None,
     final_fit_maxfev: int = 100000,
     snr_confidence_threshold: float = 4.0,
+    baseline_window=0.4,
+    max_range_fraction: float = 0.2,
+    min_points: int = 3,
 ):
-    """Refit selected candidates and compute final line diagnostics."""
+    """Refit selected candidates and compute final line diagnostics.
+
+    The baseline parameters are used only when ``base``/``ylines`` are not
+    provided; they must then match the values used for the candidate search.
+    ``baseline_window`` may be a float, an array aligned with
+    ``spectrum.energy``, or a callable ``f(energy)``.
+    """
 
     base, ylines = _baseline_and_line_excess(
         spectrum,
         base=base,
         ylines=ylines,
+        baseline_window=baseline_window,
+        max_range_fraction=max_range_fraction,
+        min_points=min_points,
     )
 
     clean_lines = _ensure_line_context(
@@ -953,6 +967,9 @@ def fit_global(
     save_csv: bool = True,
     final_fit_maxfev: int = 100000,
     snr_confidence_threshold: float = 4.0,
+    baseline_window=0.4,
+    max_range_fraction: float = 0.2,
+    min_points: int = 3,
     return_yfit: bool = False,
     energy_min: float | None = None,
     energy_max: float | None = None,
@@ -969,6 +986,12 @@ def fit_global(
         for the candidate search.
     base, ylines : numpy.ndarray or None, default: None
         Optional precomputed baseline and baseline-subtracted excess spectrum.
+    baseline_window, max_range_fraction, min_points
+        Empirical-baseline parameters, used only when ``base``/``ylines``
+        are not provided; they must then match the values used for the
+        candidate search (e.g. pass ``config.baseline_window``).
+        ``baseline_window`` may be a float, an array aligned with
+        ``spectrum.energy``, or a callable ``f(energy)``.
     show_plot : bool, default: True
         Display the final diagnostic plot.
     output_dir : str, pathlib.Path, or None, default: None
@@ -1000,6 +1023,9 @@ def fit_global(
         spectrum,
         base=base,
         ylines=ylines,
+        baseline_window=baseline_window,
+        max_range_fraction=max_range_fraction,
+        min_points=min_points,
     )
 
     result, yfit = final_fit_and_metrics(
