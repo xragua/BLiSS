@@ -1286,8 +1286,8 @@ class BlindLineSearchPipeline:
         # makes the returned clean_lines table consistent with the final-fit output.
         if 'cluster_probability' not in clean_lines.columns:
             clean_lines['cluster_probability'] = np.nan
-        high_snr = _snr_confidence_mask(clean_lines, self.config.snr_confidence_threshold)
-        clean_lines.loc[high_snr, 'cluster_probability'] = 1.0
+       # high_snr = _snr_confidence_mask(clean_lines, self.config.snr_confidence_threshold)
+        #clean_lines.loc[high_snr, 'cluster_probability'] = 1.0
 
         for col in CANDIDATE_COLUMNS:
             if col not in clean_lines.columns:

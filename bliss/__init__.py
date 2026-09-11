@@ -41,12 +41,7 @@ from .line_identification.line_identifier import (
 
 from .plotting.line_probability_plotter import plot_line_prob
 from .plotting.run_output_manager import create_bliss_results_folder, ensure_output_folder
-from .isis_interface import (
-    write_isis_line_model_files,
-    write_isis_files_from_bliss_results,
-    clean_zero_area_egauss_model,
-    run_bliss_for_isis,
-)
+
 
 __all__ = [
     "Spectrum",
@@ -85,9 +80,9 @@ __all__ = [
     "plot_line_prob",
     "create_bliss_results_folder",
     "ensure_output_folder",
-    "write_isis_line_model_files",
-    "write_isis_files_from_bliss_results",
-    "clean_zero_area_egauss_model",
-    "run_bliss_for_isis",
+    #"write_isis_line_model_files",
+    #"write_isis_files_from_bliss_results",
+    #"clean_zero_area_egauss_model",
+    #"run_bliss_for_isis",
     "add_look_elsewhere_p"
 ]
