@@ -88,7 +88,13 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
     ----------
     lines : pandas.DataFrame
         Candidate table from the observed spectrum. It must contain ``amplitude``,
-        ``sigma``, ``value_on_line``, and ``noise_on_block``.
+        ``sigma``, ``eamplitude``, ``esigma``, ``relative_power``, and
+        ``noise_on_block``. Optional ``response_sigma`` gives the instrumental
+        sigma at the centroid, in the same units as the fitted ``sigma``.
+        The feature space uses peak S/N, Gaussian area, relative power, and
+        ``sigma / response_sigma`` when instrumental sigmas are finite and
+        positive for every observed and synthetic candidate. Otherwise the
+        width feature is omitted for the entire comparison.
     simlines : pandas.DataFrame
         Candidate table from synthetic spectra with the same feature columns as
         ``lines``.
@@ -139,10 +145,14 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         lines_sim_real['amplitude'] /
         (lines_sim_real['noise_on_block'] + eps)
     )
-    lines_sim_real['ratio'] = (
-        lines_sim_real['sigma'] /
-        (lines_sim_real['amplitude'] + eps)
-    )
+    feature_columns = ['peak_snr', 'area', 'relative_power']
+    if 'response_sigma' in lines_sim_real.columns:
+        instrumental_sigma = pd.to_numeric(
+            lines_sim_real['response_sigma'], errors='coerce'
+        ).to_numpy(dtype=float)
+        if np.all(np.isfinite(instrumental_sigma) & (instrumental_sigma > 0)):
+            lines_sim_real['width_ratio'] = lines_sim_real['sigma'] / instrumental_sigma
+            feature_columns.insert(1, 'width_ratio')
     lines_sim_real['area'] = (
         lines_sim_real['amplitude'] *
         lines_sim_real['sigma'] *
@@ -157,16 +167,16 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         lines_sim_real['area'] /
         (lines_sim_real['earea'] + eps)
     )
-    for col in ['peak_snr', 'ratio', 'area', 'earea', 'area_snr']:
+    for col in ['peak_snr', 'area', 'earea', 'area_snr'] + (
+        ['width_ratio'] if 'width_ratio' in feature_columns else []
+    ):
         lines_sim_real[col] = np.nan_to_num(
             lines_sim_real[col],
             nan=0.0,
             posinf=0.0,
             neginf=0.0
         )
-    data = lines_sim_real[
-        ['peak_snr', 'ratio', 'area','relative_power']
-    ]
+    data = lines_sim_real[feature_columns]
     scaler = StandardScaler()
     X = scaler.fit_transform(data)
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)

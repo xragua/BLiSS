@@ -5,7 +5,7 @@ import pytest
 import matplotlib
 matplotlib.use("Agg")
 
-from bliss.line_search.empirical_baseline import moving_average, base_calculator
+from bliss.line_search.empirical_baseline import base_calculator
 from bliss.line_search.peak_selection import find_peaks_new
 from bliss.line_search.gaussian_models import gaussian, n_gaussian, p0_generator, p0_generator_final
 from bliss.line_search.candidate_regions import (
@@ -16,7 +16,7 @@ from bliss.line_search.candidate_regions import (
     _fit_candidate_block,
     return_raw_lines,
 )
-from bliss.spectrum_data.rebinning_tools import _clean_arrays, rebin_bins, rebin_snr, rebin_resolution
+from bliss.spectrum_data.rebinning_tools import rebin_bins, rebin_snr, rebin_resolution
 from bliss.spectrum_data.text_spectrum_loader import load_text_spectrum
 from bliss.spectrum_data.spectrum_container import Spectrum
 from bliss.synthetic_probability.synthetic_spectra import SyntheticSpectrumGenerator, calculate_synthetic_lines_spectra

@@ -1,6 +1,8 @@
 """Gaussian models and initial-parameter generators used by BLiSS fits."""
 import numpy as np
 
+MIN_INSTRUMENTAL_SIGMA_FRACTION = 0.1
+
 def gaussian(x, amplitude, center, sigma):
     """Evaluate a single Gaussian profile.
 
@@ -59,7 +61,9 @@ def p0_generator(x, y, good_peaks_dataframe, response_sigma=None):
     response_sigma : array-like or None, default: None
         Instrumental Gaussian-equivalent sigma evaluated on ``x``. When supplied,
         it is used as the initial width at each candidate energy instead of the
-        generic 0.05 coordinate-unit fallback.
+        generic 0.05 coordinate-unit fallback. A fixed lower bound of 0.1 times
+        the valid instrumental sigma at the initial peak is imposed; without
+        valid resolution the previous zero lower bound is retained.
 
     Returns
     -------
@@ -78,6 +82,9 @@ def p0_generator(x, y, good_peaks_dataframe, response_sigma=None):
             sigma_guess = response_sigma[position]
         else:
             sigma_guess = np.nan
+        # Freeze the numerical width floor at the initial candidate energy.
+        sigma_floor = (MIN_INSTRUMENTAL_SIGMA_FRACTION * sigma_guess
+                       if np.isfinite(sigma_guess) and sigma_guess > 0 else 0.0)
         if not np.isfinite(sigma_guess) or sigma_guess <= 0:
             if (good_peaks_dataframe.twidth.loc[i] < 0.05) & (good_peaks_dataframe.twidth.loc[i] > 0):
                 sigma_guess = good_peaks_dataframe.twidth.loc[i]
@@ -86,7 +93,7 @@ def p0_generator(x, y, good_peaks_dataframe, response_sigma=None):
         p0.append(sigma_guess)
         bound_low.append(y[good_peaks_dataframe.position.loc[i]] * 0)
         bound_low.append(good_peaks_dataframe.energy.loc[i] * 0.99)
-        bound_low.append(0)
+        bound_low.append(sigma_floor)
         bound_high.append(y[good_peaks_dataframe.position.loc[i]] * 100)
         bound_high.append(good_peaks_dataframe.energy.loc[i] * 1.01)
         bound_high.append(max(0.25, sigma_guess * 2.0))
@@ -109,7 +116,8 @@ def p0_generator_final(x, y, clean_lines, response_sigma=None):
     response_sigma : array-like or None, default: None
         Instrumental Gaussian-equivalent sigma evaluated on ``x``. When supplied,
         the response width at each candidate center is used to initialize the final
-        fit.
+        fit. The lower width bound is fixed at 0.1 times that instrumental
+        sigma; without valid resolution the previous zero bound is retained.
 
     Returns
     -------
@@ -125,6 +133,9 @@ def p0_generator_final(x, y, clean_lines, response_sigma=None):
             sigma_guess = np.interp(clean_lines.center.loc[i], np.asarray(x, dtype=float), response_sigma_array)
         else:
             sigma_guess = np.nan
+        # Freeze the numerical width floor at the initial candidate energy.
+        sigma_floor = (MIN_INSTRUMENTAL_SIGMA_FRACTION * sigma_guess
+                       if np.isfinite(sigma_guess) and sigma_guess > 0 else 0.0)
         if not np.isfinite(sigma_guess) or sigma_guess <= 0:
             if (clean_lines.sigma.loc[i] < 0.05) & (clean_lines.sigma.loc[i] > 0):
                 sigma_guess = clean_lines.sigma.loc[i]
@@ -133,7 +144,7 @@ def p0_generator_final(x, y, clean_lines, response_sigma=None):
         p0.append(sigma_guess)
         bound_low.append(0)
         bound_low.append(clean_lines.center.loc[i] - 0.1)
-        bound_low.append(0)
+        bound_low.append(sigma_floor)
         bound_high.append(clean_lines.amplitude.loc[i] * 10)
         bound_high.append(clean_lines.center.loc[i] + 0.1)
         bound_high.append(max(clean_lines.sigma.loc[i] + 0.01, sigma_guess * 2.0))

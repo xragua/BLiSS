@@ -316,8 +316,8 @@ def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Pat
         Source PHA/FITS spectrum file. Observed detector-space counts or rates are
         retained directly; the spectrum is not unfolded.
     background_path : str, pathlib.Path, or None, default: None
-        Optional background spectrum. It is scaled by BACKSCAL and EXPOSURE before
-        subtraction.
+        Optional background spectrum. It is converted to the source column's
+        units using BACKSCAL and EXPOSURE before subtraction.
     rmf_path : str, pathlib.Path, or None, default: None
         Optional RMF file used to convert channel numbers into energy-bin centers
         and widths from EBOUNDS and to estimate the instrumental line-spread width
@@ -342,12 +342,25 @@ def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Pat
         source_hdu = _find_spectrum_hdu(hdul)
         source_header = source_hdu.header
         channel, values, uncertainties = _extract_spectrum_arrays(source_hdu)
+        source_column = _find_existing_column(source_hdu, POSSIBLE_SPECTRUM_COLUMNS)
     if background_path is not None and subtract_background:
         with fits.open(background_path) as hdul:
             background_hdu = _find_spectrum_hdu(hdul)
             background_header = background_hdu.header
             bkg_channel, bkg_values, bkg_uncertainties = _extract_spectrum_arrays(background_hdu)
+            background_column = _find_existing_column(background_hdu, POSSIBLE_SPECTRUM_COLUMNS)
         scale = _background_scale(source_header, background_header)
+        # The base scale is for counts; adapt it to the stored column units.
+        if background_column.upper() in RATE_COLUMNS:
+            exposure = _header_float(background_header, 'EXPOSURE', np.nan)
+            if not np.isfinite(exposure) or exposure <= 0:
+                raise ValueError(f'{background_path}: RATE column but no valid EXPOSURE keyword.')
+            scale *= exposure
+        if source_column.upper() in RATE_COLUMNS:
+            exposure = _header_float(source_header, 'EXPOSURE', np.nan)
+            if not np.isfinite(exposure) or exposure <= 0:
+                raise ValueError(f'{pha_path}: RATE column but no valid EXPOSURE keyword.')
+            scale /= exposure
         min_size = min(len(values), len(bkg_values))
         values = values[:min_size] - scale * bkg_values[:min_size]
         uncertainties = np.sqrt(uncertainties[:min_size] ** 2 + (scale * bkg_uncertainties[:min_size]) ** 2)

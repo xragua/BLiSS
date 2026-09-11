@@ -24,14 +24,18 @@ LINE_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability',] #'response_feature', 'response_feature_score']
+    'snr_area', 'ew', 'cluster_probability',
+    'response_feature', 'response_feature_score',
+    'sigma_lower_bound', 'sigma_at_lower_bound',]
 
 CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
 FINAL_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability',] #'response_feature', 'response_feature_score', 'fit_error_flag']
+    'snr_area', 'ew', 'cluster_probability',
+    'response_feature', 'response_feature_score',
+    'sigma_lower_bound', 'sigma_at_lower_bound',]
 
 
 @dataclass
@@ -415,6 +419,8 @@ def _flag_response_features(lines, spectrum, threshold):
     arf_step = np.nanmedian(np.diff(arf_energy)) if len(arf_energy) > 1 else 0.0
     for idx, center in lines['center'].items():
         center = float(center)
+        if not np.isfinite(center):
+            continue
         if spectrum.response_sigma is not None and len(spectrum.response_sigma):
             local_sigma = float(np.interp(center, spectrum.energy, spectrum.response_sigma))
         else:
@@ -578,6 +584,7 @@ def final_fit_and_metrics(
     baseline_window=0.4,
     max_range_fraction: float = 0.2,
     min_points: int = 3,
+    response_feature_threshold: float = 5.0,
 ):
     """Refit selected candidates and compute final line diagnostics.
 
@@ -585,6 +592,9 @@ def final_fit_and_metrics(
     provided; they must then match the values used for the candidate search.
     ``baseline_window`` may be a float, an array aligned with
     ``spectrum.energy``, or a callable ``f(energy)``.
+    ARF feature flags and scores are recomputed at the fitted centroids using
+    ``response_feature_threshold``. Without usable ARF data, the flag is False
+    (not flagged) and the score is NaN (unavailable).
     """
 
     base, ylines = _baseline_and_line_excess(
@@ -771,7 +781,11 @@ def final_fit_and_metrics(
         if np.any(valid_mask):
             ew = (
                 np.sum(
-                    yfit[valid_mask]
+                    # Integrate this component only, excluding neighbouring lines.
+                    n_gaussian(
+                        spectrum.energy[valid_mask],
+                        float(row.amplitude), center, sigma,
+                    )
                     / base[valid_mask]
                     * spectrum.bin_width[valid_mask]
                 )
@@ -816,6 +830,13 @@ def final_fit_and_metrics(
 
     result.loc[bad_error, "fit_error_flag"] = "unconstrained"
 
+    result['sigma_lower_bound'] = np.asarray(bounds[0], dtype=float)[2::3]
+    result['sigma_at_lower_bound'] = (
+        (result['sigma_lower_bound'] > 0)
+        & (result['sigma'] <= 1.01 * result['sigma_lower_bound'])
+    )
+
+    result = _flag_response_features(result, spectrum, response_feature_threshold)
     result = result[FINAL_OUTPUT_COLUMNS]
 
     high_snr = _snr_confidence_mask(
@@ -974,6 +995,7 @@ def fit_global(
     energy_min: float | None = None,
     energy_max: float | None = None,
     size_fig_input: tuple[float, float] | None = None,
+    response_feature_threshold: float = 5.0,
 ):
     """Run only the expensive global fit on user-filtered candidate lines.
 
@@ -1005,6 +1027,11 @@ def fit_global(
     snr_confidence_threshold : float, default: 4.0
         S/N threshold above which ``cluster_probability`` is set to 1 if any of
         ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
+    response_feature_threshold : float, default: 5.0
+        ARF sharpness-score threshold for flagging fitted lines; pass the same
+        value as in the candidate-search config. The returned table and CSV
+        include ``response_feature`` and ``response_feature_score``. With no
+        usable ARF, these are False (not flagged) and NaN (unavailable).
     return_yfit : bool, default: False
         If true, return ``(result, yfit)`` instead of only ``result``.
     energy_min, energy_max : float or None, default=None
@@ -1035,6 +1062,7 @@ def fit_global(
         ylines=ylines,
         final_fit_maxfev=final_fit_maxfev,
         snr_confidence_threshold=snr_confidence_threshold,
+        response_feature_threshold=response_feature_threshold,
     )
 
     output_path = None
@@ -1248,6 +1276,7 @@ class BlindLineSearchPipeline:
             clean_lines=selected,
             final_fit_maxfev=self.config.final_fit_maxfev,
             snr_confidence_threshold=self.config.snr_confidence_threshold,
+            response_feature_threshold=self.config.response_feature_threshold,
         )
 
         # Safety: keep only nominal-window lines after final fitting too
@@ -1311,6 +1340,7 @@ class BlindLineSearchPipeline:
             ylines=ylines,
             final_fit_maxfev=self.config.final_fit_maxfev,
             snr_confidence_threshold=self.config.snr_confidence_threshold,
+            response_feature_threshold=self.config.response_feature_threshold,
         )
 
     def _plot_final_fit(

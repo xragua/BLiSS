@@ -175,7 +175,8 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
     list of dict
         One dictionary per fitted local Gaussian, containing amplitude,
         center, sigma, formal errors, block-level R-squared, and mean block
-        uncertainty.
+        uncertainty. ``sigma_lower_bound`` records the imposed width floor;
+        ``sigma_at_lower_bound`` marks widths within 1% of a positive floor.
     """
     rows = []
     noise_on_block = np.mean(block.uncertainties)
@@ -228,6 +229,10 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
                         rows.append({'amplitude': popt_[k][0],
                                      'center': popt_[k][1],
                                      'sigma': popt_[k][2],
+                                     'sigma_lower_bound': bounds[0][3*k + 2],
+                                     'sigma_at_lower_bound': bool(
+                                         bounds[0][3*k + 2] > 0 and
+                                         popt_[k][2] <= 1.01 * bounds[0][3*k + 2]),
                                      'eamplitude': errors_[k][0],
                                      'ecenter': errors_[k][1],
                                      'esigma': errors_[k][2],
@@ -303,7 +308,8 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
     -------
     pandas.DataFrame
         Raw candidate-line table with Gaussian parameters, parameter errors,
-        goodness-of-fit information, and local continuum context.
+        goodness-of-fit information, local continuum context, and instrumental
+        ``response_sigma`` interpolated at each fitted centroid (NaN if absent).
     """
     blocks = _build_candidate_blocks(x, y, sy, ylines, base,
                                      response_sigma=response_sigma)
@@ -313,6 +319,10 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
             block, block_index, min_peak_separation=min_peak_separation))
     fitted = pd.DataFrame(rows, columns=['amplitude', 'center', 'sigma',
                                          'eamplitude', 'ecenter', 'esigma',
-                                         'rsq', 'noise_on_block'])
+                                         'rsq', 'noise_on_block',
+                                         'sigma_lower_bound', 'sigma_at_lower_bound'])
     fitted = _add_line_context(fitted, x, y, base)
+    fitted['response_sigma'] = np.nan
+    if response_sigma is not None and len(fitted):
+        fitted['response_sigma'] = np.interp(fitted['center'], x, response_sigma)
     return fitted.reset_index(drop=True)
