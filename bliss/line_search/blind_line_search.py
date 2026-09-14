@@ -8,10 +8,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from .empirical_baseline import base_calculator
+from .fit_quality import annotate_fit_quality, FIT_QUALITY_COLUMNS
 from .candidate_regions import return_raw_lines
-from .gaussian_models import n_gaussian, p0_generator_final
+from .gaussian_models import n_gaussian, p0_generator_final, gaussian_area_error
 from ..synthetic_probability.synthetic_spectra import generate_null_realizations
-from ..synthetic_probability.gmm_probability import eval_line_probability_gmm
+from ..synthetic_probability.gmm_score import eval_bliss_score_gmm
 from ..plotting.run_output_manager import ensure_output_folder
 from ..spectrum_data.fits_spectrum_loader import (
     load_fits_spectrum,
@@ -22,20 +23,24 @@ from ..spectrum_data.rebinning_tools import rebin_counts
 
 LINE_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
+    'cov_amplitude_sigma',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability',
+    'snr_area', 'ew', 'bliss_score',
     'response_feature', 'response_feature_score',
-    'sigma_lower_bound', 'sigma_at_lower_bound',]
+    'sigma_lower_bound', 'sigma_at_lower_bound',
+    'bliss_score_status', *FIT_QUALITY_COLUMNS,]
 
 CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
 FINAL_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
+    'cov_amplitude_sigma',
     'relative_power', 'noise_on_block', 'value_on_line',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'cluster_probability',
+    'snr_area', 'ew', 'bliss_score',
     'response_feature', 'response_feature_score',
-    'sigma_lower_bound', 'sigma_at_lower_bound',]
+    'sigma_lower_bound', 'sigma_at_lower_bound',
+    'bliss_score_status', *FIT_QUALITY_COLUMNS,]
 
 
 @dataclass
@@ -51,7 +56,7 @@ class BlindLineSearchConfig:
         candidate detection and fitting.
 
     num_synthetic_simulations : int
-        Number of synthetic spectra generated for probability estimation.
+        Number of synthetic spectra generated for bliss_score estimation.
     synthetic_seed : int or None
         Random seed used for synthetic-spectrum generation.
 
@@ -61,11 +66,17 @@ class BlindLineSearchConfig:
 
     snr_confidence_threshold : float
         Any available S/N diagnostic above which a candidate is assigned
-        probability 1.
+        bliss_score 1.
 
     response_feature_threshold : float
         Robust score above which unusually sharp ARF effective-area
         structure is flagged.
+
+    min_area_snr : float or None
+        Experimental GMM preselection: require covariance-aware area S/N
+        strictly above this threshold in observed and null candidates.
+        Default 1.0 excludes areas compatible with zero within one formal
+        error. Set None to restore the previous eligibility rules.
 
     max_sigma_line : float
         Maximum Gaussian sigma allowed for an individual line candidate,
@@ -121,6 +132,9 @@ class BlindLineSearchConfig:
     rebin_method: str = "none"          # 'none' | 'bins' | 'snr' | 'resolution'
     rebin_scale: Optional[float] = None
     rebin_min_bins: int = 1
+
+    # Reversible area-significance preselection before the GMM.
+    min_area_snr: Optional[float] = 1.0
 
 
 
@@ -471,6 +485,8 @@ def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
     from the local Gaussian area divided by the empirical baseline at the line
     centroid. If the spectral coordinate is in keV, the returned EW is in eV.
     The global-fit EW is recomputed later from the final multi-Gaussian model.
+    Area errors include amplitude/width covariance; legacy tables without that
+    covariance have unavailable area errors and area S/N, not diagonal estimates.
     """
     lines = lines.copy()
 
@@ -481,7 +497,7 @@ def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
         return lines
 
     numeric_cols = [
-        'amplitude', 'eamplitude', 'sigma', 'esigma',
+        'amplitude', 'eamplitude', 'sigma', 'esigma', 'cov_amplitude_sigma',
         'noise_on_block', 'base_on_line'
     ]
     for col in numeric_cols:
@@ -496,10 +512,9 @@ def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
     lines['snr_amplitude'] = _safe_divide(lines['amplitude'], lines['eamplitude'])
 
     lines['area'] = lines['amplitude'] * lines['sigma'] * k
-    lines['earea'] = np.sqrt(
-        (lines['sigma'] * k * lines['eamplitude']) ** 2
-        +
-        (lines['amplitude'] * k * lines['esigma']) ** 2
+    lines['earea'] = gaussian_area_error(
+        lines['amplitude'], lines['sigma'], lines['eamplitude'], lines['esigma'],
+        lines['cov_amplitude_sigma'],
     )
     lines['snr_area'] = _safe_divide(lines['area'], lines['earea'])
 
@@ -551,21 +566,18 @@ def _ensure_line_context(
             (clean_lines['value_on_line'] - clean_lines['base_on_line']) / denom,
             np.nan,
         )
-    # Recompute local candidate diagnostics if the user passed a minimal
-    # table without the convenience S/N columns. The global fit will later
-    # overwrite the fit-dependent quantities using the final covariance.
-    if (
-        'snr_peak' not in clean_lines.columns
-        or 'snr_area' not in clean_lines.columns
-        or 'snr_amplitude' not in clean_lines.columns
-    ):
-        clean_lines = _add_candidate_metrics(clean_lines)
+    # Recompute diagnostics so legacy diagonal-only area errors cannot survive
+    # into the S/N shortcut. The global fit later supplies its own covariance.
+    clean_lines = _add_candidate_metrics(clean_lines)
 
-    if 'cluster_probability' not in clean_lines.columns:
-        clean_lines['cluster_probability'] = np.nan
+    if 'bliss_score' not in clean_lines.columns:
+        clean_lines['bliss_score'] = np.nan
 
     high_snr = _snr_confidence_mask(clean_lines, snr_confidence_threshold)
-    clean_lines.loc[high_snr, 'cluster_probability'] = 1.0
+    high_snr &= clean_lines['bliss_score'].notna()
+    if 'fit_evaluable' in clean_lines:
+        high_snr &= ~clean_lines['fit_evaluable'].eq(False)
+    clean_lines.loc[high_snr, 'bliss_score'] = 1.0
 
     for col in CANDIDATE_COLUMNS:
         if col not in clean_lines.columns:
@@ -587,6 +599,8 @@ def final_fit_and_metrics(
     response_feature_threshold: float = 5.0,
 ):
     """Refit selected candidates and compute final line diagnostics.
+
+    Area errors use the final joint fit covariance, replacing local covariance.
 
     The baseline parameters are used only when ``base``/``ylines`` are not
     provided; they must then match the values used for the candidate search.
@@ -613,6 +627,12 @@ def final_fit_and_metrics(
         snr_confidence_threshold=snr_confidence_threshold,
     )
 
+    rejected = clean_lines.iloc[:0].copy()
+    if 'fit_evaluable' in clean_lines:
+        rejected = clean_lines[clean_lines['fit_evaluable'].eq(False)].copy()
+        clean_lines = clean_lines[~clean_lines['fit_evaluable'].eq(False)].reset_index(drop=True)
+    global_converged = False
+    global_message = ''
     fitted_final = pd.DataFrame(
         columns=[
             "amplitude",
@@ -621,6 +641,7 @@ def final_fit_and_metrics(
             "eamplitude",
             "ecenter",
             "esigma",
+            "cov_amplitude_sigma",
         ]
     )
 
@@ -666,6 +687,7 @@ def final_fit_and_metrics(
                 maxfev=final_fit_maxfev,
             )
 
+            global_converged = True
             errors = np.sqrt(np.diag(pcov))
 
             yfit = n_gaussian(
@@ -681,14 +703,13 @@ def final_fit_and_metrics(
                     [
                         popt_[k],
                         errors_[k],
+                        [pcov[3*k, 3*k + 2]],
                     ]
                 )
                 fitted_final.loc[k] = new_line
 
-        except RuntimeError as exc:
-            print(f"Error final fitting: {exc}")
-
-        except ValueError as exc:
+        except (RuntimeError, ValueError) as exc:
+            global_message = str(exc)
             print(f"Error final fitting: {exc}")
 
     clean_select = clean_lines[
@@ -697,7 +718,7 @@ def final_fit_and_metrics(
             "noise_on_block",
             "value_on_line",
             "base_on_line",
-            "cluster_probability",
+            "bliss_score",
         ]
     ]
 
@@ -710,7 +731,9 @@ def final_fit_and_metrics(
     )
 
     if len(result) == 0:
-        return pd.DataFrame(columns=FINAL_OUTPUT_COLUMNS), yfit
+        rejected['bliss_score'] = np.nan
+        rejected['bliss_score_status'] = 'invalid_fit'
+        return rejected.reindex(columns=FINAL_OUTPUT_COLUMNS).reset_index(drop=True), yfit
 
     cols = [
         "amplitude",
@@ -719,6 +742,7 @@ def final_fit_and_metrics(
         "eamplitude",
         "ecenter",
         "esigma",
+        "cov_amplitude_sigma",
     ]
 
     result[cols] = result[cols].apply(
@@ -749,10 +773,9 @@ def final_fit_and_metrics(
         * k
     )
 
-    result["earea"] = np.sqrt(
-        (result["sigma"] * k * result["eamplitude"]) ** 2
-        +
-        (result["amplitude"] * k * result["esigma"]) ** 2
+    result["earea"] = gaussian_area_error(
+        result["amplitude"], result["sigma"], result["eamplitude"], result["esigma"],
+        result["cov_amplitude_sigma"],
     )
 
     result["snr_area"] = _safe_divide(
@@ -836,6 +859,15 @@ def final_fit_and_metrics(
         & (result['sigma'] <= 1.01 * result['sigma_lower_bound'])
     )
 
+    result['fit_converged'] = global_converged
+    result['fit_message'] = global_message
+    result['fit_center_initial'] = clean_lines['center'].to_numpy()
+    result['fit_block_id'] = np.nan  # the global fit is not a local block
+    if not global_converged:
+        result['center'] = result['fit_center_initial']
+    result = annotate_fit_quality(result)
+    result['bliss_score_status'] = (clean_lines['bliss_score_status'].to_numpy()
+                              if 'bliss_score_status' in clean_lines else 'unavailable')
     result = _flag_response_features(result, spectrum, response_feature_threshold)
     result = result[FINAL_OUTPUT_COLUMNS]
 
@@ -844,8 +876,14 @@ def final_fit_and_metrics(
         snr_confidence_threshold,
     )
 
-    result.loc[high_snr, "cluster_probability"] = 1.0
-
+    high_snr &= result['fit_evaluable'] & result['bliss_score'].notna()
+    result.loc[high_snr, "bliss_score"] = 1.0
+    result.loc[~result['fit_evaluable'], 'bliss_score'] = np.nan
+    result.loc[~result['fit_evaluable'], 'bliss_score_status'] = 'invalid_fit'
+    rejected['bliss_score'] = np.nan
+    rejected['bliss_score_status'] = 'invalid_fit'
+    result = pd.concat([result, rejected.reindex(columns=FINAL_OUTPUT_COLUMNS)],
+                       ignore_index=True)
     return result, yfit
 
 
@@ -1025,7 +1063,7 @@ def fit_global(
     final_fit_maxfev : int, default: 100000
         Maximum number of function evaluations in ``curve_fit``.
     snr_confidence_threshold : float, default: 4.0
-        S/N threshold above which ``cluster_probability`` is set to 1 if any of
+        S/N threshold above which ``bliss_score`` is set to 1 if any of
         ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
     response_feature_threshold : float, default: 5.0
         ARF sharpness-score threshold for flagging fitted lines; pass the same
@@ -1098,7 +1136,7 @@ def fit_global(
 class BlindLineSearchPipeline:
     """Run the blind emission-line search on one spectrum.
 
-    By default, the pipeline now stops after candidate detection and probability
+    By default, the pipeline now stops after candidate detection and bliss_score
     estimation. The expensive global multi-Gaussian fit can be run later with
     ``fit_global`` after the user filters the candidate table.
     """
@@ -1127,7 +1165,7 @@ class BlindLineSearchPipeline:
         ``pha`` and ``rmf`` are required; ``arf`` and ``bkg`` are optional.
         The spectrum is rebinned conserving counts according to the config and
         converted to counts s^-1 keV^-1. The empirical baseline is computed from the full input spectrum.
-        Candidate detection, local Gaussian fitting, probability estimation,
+        Candidate detection, local Gaussian fitting, bliss_score estimation,
         and the optional global fit are performed inside the selected energy
         interval enlarged by ``energy_pad``. The returned catalogue is finally
         restricted to the nominal ``en1``--``en2`` interval.
@@ -1245,12 +1283,13 @@ class BlindLineSearchPipeline:
         self.synthetic_candidates = _add_candidate_metrics(synthetic_candidates)
         self.n_sim = max(1, len(null_realizations))  
 
-        candidates = eval_line_probability_gmm(
+        candidates = eval_bliss_score_gmm(
             raw_candidates,
             synthetic_candidates,
             simx=spectrum.energy,
             x=spectrum.energy,
             n_sim=max(1, len(null_realizations)),
+            min_area_snr=self.config.min_area_snr,
         )
         # ------------------------------------------------------------
         # Final catalogue restricted to the nominal science window
@@ -1300,8 +1339,13 @@ class BlindLineSearchPipeline:
     def _select_candidates(self, candidates: pd.DataFrame, *, en1: float, en2: float) -> pd.DataFrame:
         """Restrict candidate lines to the requested energy interval."""
         clean_lines = candidates.copy()
+        selection_center = clean_lines.center.copy()
+        if 'fit_center_initial' in clean_lines:
+            selection_center = selection_center.where(
+                np.isfinite(selection_center), clean_lines['fit_center_initial'])
+        # Keep unlocalizable failed rows as diagnostics rather than losing them.
         clean_lines = clean_lines[
-            (clean_lines.center >= en1) & (clean_lines.center <= en2)
+            selection_center.between(en1, en2) | ~np.isfinite(selection_center)
         ].reset_index(drop=True)
         clean_lines = _add_candidate_metrics(clean_lines)
         clean_lines = _flag_response_features(
@@ -1311,12 +1355,12 @@ class BlindLineSearchPipeline:
         )
 
         # Before the optional expensive global fit, force very significant
-        # candidates to probability 1 if any S/N diagnostic is high. This
+        # candidates to bliss_score 1 if any S/N diagnostic is high. This
         # makes the returned clean_lines table consistent with the final-fit output.
-        if 'cluster_probability' not in clean_lines.columns:
-            clean_lines['cluster_probability'] = np.nan
+        if 'bliss_score' not in clean_lines.columns:
+            clean_lines['bliss_score'] = np.nan
        # high_snr = _snr_confidence_mask(clean_lines, self.config.snr_confidence_threshold)
-        #clean_lines.loc[high_snr, 'cluster_probability'] = 1.0
+        #clean_lines.loc[high_snr, 'bliss_score'] = 1.0
 
         for col in CANDIDATE_COLUMNS:
             if col not in clean_lines.columns:
@@ -1413,7 +1457,7 @@ def find_candidate_lines(
     synthetic_seed=None,
     config: Optional[BlindLineSearchConfig] = None,
 ):
-    """Run BLiSS up to candidate detection and probability estimation.
+    """Run BLiSS up to candidate detection and bliss_score estimation.
 
     Parameters
     ----------

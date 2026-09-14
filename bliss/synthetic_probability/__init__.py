@@ -1,1 +1,1 @@
-"""Synthetic-spectrum and probability-estimation utilities."""
+"""Synthetic-spectrum and score-estimation utilities."""

@@ -46,6 +46,40 @@ def n_gaussian(x, *params):
         y += gaussian(x, amplitude, center, sigma)
     return y
 
+
+def gaussian_area_error(amplitude, sigma, eamplitude, esigma,
+                        cov_amplitude_sigma):
+    """Propagate the full amplitude/width covariance to Gaussian area.
+
+    For area = sqrt(2*pi) * amplitude * sigma, the first-order variance is
+    2*pi * (sigma**2 * eamplitude**2 + amplitude**2 * esigma**2
+            + 2 * amplitude * sigma * cov_amplitude_sigma).
+    Inputs broadcast as NumPy arrays. Missing/nonfinite covariance, invalid
+    parameter errors, or an inconsistent covariance block return NaN; missing
+    covariance is never interpreted as zero. This is a local linear error
+    estimate, not a calibrated detection significance.
+    """
+    amp, width, ea, ew, cov = np.broadcast_arrays(*[
+        np.asarray(v, dtype=float) for v in
+        (amplitude, sigma, eamplitude, esigma, cov_amplitude_sigma)])
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        rho = (cov / ea) / ew
+        valid = (np.isfinite(amp) & np.isfinite(width)
+                 & np.isfinite(ea) & (ea > 0)
+                 & np.isfinite(ew) & (ew > 0) & np.isfinite(cov)
+                 & (np.abs(rho) <= 1 + 32 * np.finfo(float).eps))
+        # Only round-off beyond |rho|=1 is clipped; invalid blocks stay NaN.
+        rho = np.clip(rho, -1, 1)
+        a, b = width * ea, amp * ew
+        scale = np.maximum(np.abs(a), np.abs(b))
+        u = np.divide(a, scale, out=np.zeros_like(scale), where=scale > 0)
+        v = np.divide(b, scale, out=np.zeros_like(scale), where=scale > 0)
+        # A scaled quadratic form avoids subtracting two large variances
+        # when amplitude and width are strongly anticorrelated.
+        error = (np.sqrt(2 * np.pi) * scale
+                 * np.hypot(u + rho * v, np.sqrt((1 - rho) * (1 + rho)) * v))
+    return np.where(valid & np.isfinite(error), error, np.nan)
+
 def p0_generator(x, y, good_peaks_dataframe, response_sigma=None):
     """Build initial parameters and bounds for fitting local candidate peaks.
 

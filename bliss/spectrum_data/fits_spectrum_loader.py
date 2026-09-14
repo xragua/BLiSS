@@ -115,6 +115,36 @@ def _read_ebounds_from_rmf(path: str | Path):
                 return (channel, e_min, e_max)
     raise ValueError(f'Could not find EBOUNDS extension in RMF file: {path}')
 
+def _response_core_sigma(energy, weights):
+    """Gaussian-equivalent core width from interpolated half-height crossings.
+
+    Requires both crossings and at least two samples in the half-height core.
+    The input must include zero-weight channels, including gaps in the RMF.
+    Invalid or undersampled cores return NaN rather than a tail-based width.
+    """
+    energy = np.asarray(energy, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if len(energy) < 3 or len(weights) != len(energy):
+        return np.nan
+    peak = int(np.argmax(weights))
+    if not np.isfinite(weights[peak]) or weights[peak] <= 0:
+        return np.nan
+    half = weights[peak] / 2.0
+    lo = hi = peak
+    while lo > 0 and weights[lo - 1] >= half:
+        lo -= 1
+    while hi < len(weights) - 1 and weights[hi + 1] >= half:
+        hi += 1
+    if lo == 0 or hi == len(weights) - 1 or hi == lo:
+        return np.nan
+    left = np.interp(half, [weights[lo - 1], weights[lo]],
+                     [energy[lo - 1], energy[lo]])
+    right = np.interp(half, [weights[hi + 1], weights[hi]],
+                      [energy[hi + 1], energy[hi]])
+    width = right - left
+    return width / np.sqrt(8.0 * np.log(2.0)) if width > 0 else np.nan
+
+
 def _read_rmf_resolution(path: str | Path):
     """Estimate the detector line-spread width as a function of energy from an RMF.
 
@@ -127,8 +157,9 @@ def _read_rmf_resolution(path: str | Path):
     -------
     tuple of numpy.ndarray
         Incident-energy bin centers and Gaussian-equivalent instrumental sigma.
-        The sigma is calculated as the response-weighted standard deviation of
-        detector-channel energies for each incident-energy row.
+        The sigma is the FWHM of the principal response core divided by
+        sqrt(8 ln 2), excluding the contribution of distant response tails.
+        Rows without a resolved core are retained as NaN.
 
     Raises
     ------
@@ -175,16 +206,15 @@ def _read_rmf_resolution(path: str | Path):
                             weights.append(weight)
 
                 if weights:
-                    energies = np.asarray(energies, dtype=float)
-                    weights = np.asarray(weights, dtype=float)
-                    weight_sum = np.sum(weights)
-                    mean_energy = np.sum(weights * energies) / weight_sum
-                    variance = np.sum(weights * (energies - mean_energy) ** 2) / weight_sum
-                    response_sigma[row_index] = np.sqrt(max(variance, 0.0))
+                    # Restore zero-probability channels so gaps cannot broaden
+                    # the interpolated half-height crossings.
+                    profile = np.zeros(len(channel_energy), dtype=float)
+                    indices = np.searchsorted(channel_energy, energies)
+                    np.add.at(profile, indices, weights)
+                    response_sigma[row_index] = _response_core_sigma(
+                        channel_energy, profile)
 
-            valid = np.isfinite(response_sigma) & (response_sigma > 0)
-            if np.any(valid):
-                return incident_energy[valid], response_sigma[valid]
+            return incident_energy, response_sigma
 
     raise ValueError(f'Could not derive instrumental resolution from RMF file: {path}')
 

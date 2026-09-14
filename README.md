@@ -125,3 +125,17 @@ luisabalo.com
 # License
 
 This project is distributed under the **MIT License**.
+## bliss_score
+
+`bliss_score` is an empirical score in [0, 1] based on the excess of candidate
+rates over synthetic null spectra. It is not a calibrated posterior probability
+or a detection p-value. Its definition and numerical calculation are unchanged
+by this naming update. New candidate tables use `bliss_score` and
+`bliss_score_status`; plots and notebook thresholds use the same terminology.
+
+Use `from bliss import read_bliss_csv` to read historical candidate CSVs with
+the new column names without modifying the original experiment files. The
+public scoring API is `calculate_bliss_score`, `eval_bliss_score_gmm`,
+`GMMBlissScoreEvaluator`, and `plot_bliss_score`. Restart notebook kernels after
+updating the package. Historical figures and experiment manifests retain the
+labels and code hashes of the run that produced them.

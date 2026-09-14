@@ -24,7 +24,7 @@ def _candidate_table(probability=0.4):
             "noise_on_block": [2.0],
             "value_on_line": [135.0],
             "base_on_line": [100.0],
-            "cluster_probability": [probability],
+            "bliss_score": [probability],
         }
     )
 
@@ -38,7 +38,7 @@ def test_pipeline_direct_arrays_run_with_monkeypatched_candidate_steps(monkeypat
 
     monkeypatch.setattr(bls, "return_raw_lines", lambda *args, **kwargs: _candidate_table())
     monkeypatch.setattr(bls, "calculate_synthetic_lines_spectra", lambda x, y, sy, n: (x, y * 0, sy))
-    monkeypatch.setattr(bls, "eval_line_probability_gmm", lambda lines, *args, **kwargs: lines)
+    monkeypatch.setattr(bls, "eval_bliss_score_gmm", lambda lines, *args, **kwargs: lines)
 
     result = find_emission_lines(energy, y=counts, sy=errors, output_dir=tmp_path, show_plot=False)
 
@@ -46,7 +46,7 @@ def test_pipeline_direct_arrays_run_with_monkeypatched_candidate_steps(monkeypat
     assert len(result) == 1
     assert result.loc[0, "center"] == pytest.approx(6.4, abs=0.02)
     assert result.loc[0, "snr"] > 4
-    assert result.loc[0, "cluster_probability"] == 1
+    assert result.loc[0, "bliss_score"] == 1
     assert (tmp_path / "candidate_lines.csv").exists()
     assert (tmp_path / "run_summary.txt").read_text().startswith("BLiSS run completed")
 

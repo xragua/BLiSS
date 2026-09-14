@@ -25,6 +25,13 @@ notebooks/*
 # But keep notebook files and data files directly inside notebooks/
 !notebooks/*.ipynb
 !notebooks/*.dat
+
+# Track injection notebooks and their shared runner, not generated outputs.
+!notebooks/injection_test/
+notebooks/injection_test/*
+!notebooks/injection_test/*.ipynb
+!notebooks/injection_test/injection_helpers.py
+!notebooks/injection_test/README.md
 results/
 notebooks/results_xte_1855-026/
 .DS_Store

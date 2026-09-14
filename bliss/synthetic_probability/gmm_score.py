@@ -5,11 +5,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
+from ..line_search.fit_quality import annotate_fit_quality
+from ..line_search.gaussian_models import gaussian_area_error
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', message='divide by zero encountered in divide')
 
-class GMMLineProbabilityEvaluator:
+class GMMBlissScoreEvaluator:
     """Evaluate candidate reliability with Gaussian-mixture clustering.
 
     Attributes
@@ -20,8 +22,9 @@ class GMMLineProbabilityEvaluator:
         Scikit-learn covariance types considered during BIC model selection.
     """
 
-    def __init__(self, k_min=1, k_max=20, covariance_types=('full',)):
-        """Create a Gaussian-mixture probability evaluator.
+    def __init__(self, k_min=1, k_max=20, covariance_types=('full',),
+                 min_area_snr=1.0):
+        """Create a Gaussian-mixture score evaluator.
 
         Parameters
         ----------
@@ -32,10 +35,14 @@ class GMMLineProbabilityEvaluator:
             number of samples.
         covariance_types : tuple of str, default: ("full",)
             Covariance structures passed to ``sklearn.mixture.GaussianMixture``.
+        min_area_snr : float or None, default: 1.0
+            Require covariance-aware area S/N strictly above this value in both
+            populations. None disables this experimental preselection.
         """
         self.k_min = k_min
         self.k_max = k_max
         self.covariance_types = covariance_types
+        self.min_area_snr = min_area_snr
 
     def evaluate(self, lines, simlines, simx, x, show_plot=False):
         """Evaluate real candidates against synthetic detections.
@@ -57,11 +64,13 @@ class GMMLineProbabilityEvaluator:
         Returns
         -------
         pandas.DataFrame
-            Real candidate lines with added GMM labels and cluster-probability values.
+            Real candidate lines with added GMM labels and bliss_score values.
         """
-        return eval_line_probability_gmm(lines, simlines, simx, x, self.k_min, self.k_max, self.covariance_types, show_plot)
+        return eval_bliss_score_gmm(
+            lines, simlines, simx, x, self.k_min, self.k_max,
+            self.covariance_types, show_plot, min_area_snr=self.min_area_snr)
 
-def real_probability(real_rate, sim_rate):
+def calculate_bliss_score(real_rate, sim_rate):
     """Convert real and synthetic detection rates into a clipped reliability score.
 
     Parameters
@@ -74,14 +83,14 @@ def real_probability(real_rate, sim_rate):
     Returns
     -------
     float
-        Probability-like score ``(real_rate - sim_rate) / real_rate`` clipped to
+        Empirical score ``(real_rate - sim_rate) / real_rate`` clipped to
         the interval [0, 1]. Returns 0 when ``real_rate`` is zero.
     """
     if real_rate == 0:
         return 0.0
     return max(0.0, min(1.0, (real_rate - sim_rate) / real_rate))
 
-def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covariance_types=('full',), show_plot=False, n_sim=1):
+def _eval_bliss_score_gmm_valid(lines, simlines, simx, x, k_min=1, k_max=20, covariance_types=('full',), show_plot=False, n_sim=1):
     """Assign cluster-based reliability scores to observed candidate lines.
 
     Parameters
@@ -94,7 +103,10 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         The feature space uses peak S/N, Gaussian area, relative power, and
         ``sigma / response_sigma`` when instrumental sigmas are finite and
         positive for every observed and synthetic candidate. Otherwise the
-        width feature is omitted for the entire comparison.
+        width feature is omitted for the entire comparison. Area-error diagnostics
+        use ``cov_amplitude_sigma``; if missing, those diagnostics remain NaN.
+        Area errors and area S/N are not GMM features. The public wrapper
+        applies its optional area S/N preselection before calling this function.
     simlines : pandas.DataFrame
         Candidate table from synthetic spectra with the same feature columns as
         ``lines``.
@@ -119,7 +131,7 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
     -------
     pandas.DataFrame
         Rows corresponding to real candidates only, with ``gmm_label`` and
-        ``cluster_probability`` columns added.
+        ``bliss_score`` columns added.
     """
 
     lines = lines.copy()
@@ -127,12 +139,12 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
 
     if len(lines) == 0:
         lines["gmm_label"] = []
-        lines["cluster_probability"] = []
+        lines["bliss_score"] = []
         return lines.reset_index(drop=True)
 
     if len(simlines) == 0:
         lines["gmm_label"] = np.nan
-        lines["cluster_probability"] = 1.0
+        lines["bliss_score"] = 1.0
         return lines.reset_index(drop=True)
 
     lines['real'] = 1
@@ -158,16 +170,18 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         lines_sim_real['sigma'] *
         k
     )
-    lines_sim_real['earea'] = np.sqrt(
-        (lines_sim_real['sigma'] * k * lines_sim_real['eamplitude']) ** 2
-        +
-        (lines_sim_real['amplitude'] * k * lines_sim_real['esigma']) ** 2
+    lines_sim_real['earea'] = gaussian_area_error(
+        lines_sim_real['amplitude'], lines_sim_real['sigma'],
+        lines_sim_real['eamplitude'], lines_sim_real['esigma'],
+        lines_sim_real.get('cov_amplitude_sigma', np.nan),
     )
-    lines_sim_real['area_snr'] = (
-        lines_sim_real['area'] /
-        (lines_sim_real['earea'] + eps)
+    lines_sim_real['area_snr'] = np.where(
+        lines_sim_real['earea'] > 0,
+        lines_sim_real['area'] / lines_sim_real['earea'], np.nan,
     )
-    for col in ['peak_snr', 'area', 'earea', 'area_snr'] + (
+    # Area uncertainty is diagnostic, not a GMM feature. Keep unavailable
+    # errors/S/N as NaN instead of converting them to artificial exact zeros.
+    for col in ['peak_snr', 'area'] + (
         ['width_ratio'] if 'width_ratio' in feature_columns else []
     ):
         lines_sim_real[col] = np.nan_to_num(
@@ -239,8 +253,8 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
     sim_group = filtered_lines_sim_real[filtered_lines_sim_real.real == 0]
     real_rate = len(real_group) / (max(x) - min(x))
     sim_rate = len(sim_group) / ((max(simx) - min(simx)) * n_sim)
-    cluster_probability = np.round(real_probability(real_rate, sim_rate), 2)
-    lines_sim_real['cluster_probability'] = cluster_probability
+    bliss_score = np.round(calculate_bliss_score(real_rate, sim_rate), 2)
+    lines_sim_real['bliss_score'] = bliss_score
     lines_real = lines_sim_real[lines_sim_real.real == 1]
     lines_real = lines_real.dropna(axis=1, how='all')
     for j in idx_desc_loop:
@@ -249,6 +263,76 @@ def eval_line_probability_gmm(lines, simlines, simx, x, k_min=1, k_max=20, covar
         sim_group = filtered_lines_sim_real[(filtered_lines_sim_real.gmm_label != j) & (filtered_lines_sim_real.real == 0)]
         real_rate = len(real_group) / (max(x) - min(x))
         sim_rate = len(sim_group) / ((max(simx) - min(simx)) * n_sim)
-        lines_sim_real.loc[lines_sim_real.gmm_label == j, 'cluster_probability'] = cluster_probability
-        cluster_probability = np.round(real_probability(real_rate, sim_rate), 2)
+        lines_sim_real.loc[lines_sim_real.gmm_label == j, 'bliss_score'] = bliss_score
+        bliss_score = np.round(calculate_bliss_score(real_rate, sim_rate), 2)
     return lines_sim_real[lines_sim_real.real == 1].reset_index(drop=True)
+
+
+def eval_bliss_score_gmm(lines, simlines, simx, x, k_min=1, k_max=20,
+                              covariance_types=('full',), show_plot=False, n_sim=1,
+                              min_area_snr=1.0):
+    """Score evaluable observed/null fits, preserving every observed row.
+
+    The GMM variables and score formula are unchanged. Failed fits, invalid
+    parameters and unusable formal errors are excluded symmetrically before
+    scaling, clustering and candidate-rate calculations. By default, evaluable
+    fits must also have covariance-aware area S/N > 1: the symmetric one-error
+    interval must exclude zero. This is experimental preselection, not a
+    calibrated detection significance. ``min_area_snr=None`` disables it and
+    restores the previous eligibility rules. Nonnegative finite thresholds
+    are accepted. Missing/nonpositive area errors cannot pass an enabled cut.
+
+    Excluded rows retain their fit-quality metadata and NaN scores. Their
+    ``bliss_score_status`` distinguishes ``low_area_snr`` from ``invalid_area_error``
+    and ``invalid_fit``. No eligible null candidates leaves scores unavailable
+    rather than 1. The null rate remains normalized by the original ``n_sim``.
+    See ``_eval_bliss_score_gmm_valid`` for the feature/parameter details.
+    """
+    if min_area_snr is not None:
+        min_area_snr = float(min_area_snr)
+        if not np.isfinite(min_area_snr) or min_area_snr < 0:
+            raise ValueError('min_area_snr must be nonnegative and finite, or None.')
+    observed = annotate_fit_quality(lines).reset_index(drop=True)
+    synthetic = annotate_fit_quality(simlines).reset_index(drop=True)
+    # Features that cannot be computed must not become artificial zero values.
+    for table in [observed, synthetic]:
+        for col in ['noise_on_block', 'relative_power']:
+            v = (pd.to_numeric(table[col], errors='coerce') if col in table
+                 else pd.Series(np.nan, index=table.index))
+            bad = ~np.isfinite(v) | ((v <= 0) if col == 'noise_on_block' else False)
+            table.loc[bad, 'fit_evaluable'] = False
+            table.loc[bad, 'fit_status'] = 'not_evaluable'
+            table.loc[bad, 'fit_reasons'] = table.loc[bad, 'fit_reasons'].map(
+                lambda reason: ';'.join(filter(None, [reason, 'invalid_' + col])))
+        table['bliss_score_status'] = np.where(table['fit_evaluable'], 'eligible', 'invalid_fit')
+        if min_area_snr is not None:
+            # Recompute from fitted parameters/covariance; never trust stale
+            # area diagnostics or silently assume missing covariance is zero.
+            params = table.reindex(columns=[
+                'amplitude', 'sigma', 'eamplitude', 'esigma', 'cov_amplitude_sigma',
+            ]).apply(pd.to_numeric, errors='coerce')
+            area = (np.sqrt(2 * np.pi) * params.amplitude * params.sigma).to_numpy()
+            error = gaussian_area_error(*[params[col] for col in params.columns])
+            usable = np.isfinite(area) & np.isfinite(error) & (error > 0)
+            snr = np.divide(area, error, out=np.full(len(table), np.nan), where=usable)
+            table['area'], table['earea'], table['area_snr'] = area, error, snr
+            eligible_fit = table['fit_evaluable'].to_numpy()
+            table.loc[eligible_fit & ~usable, 'bliss_score_status'] = 'invalid_area_error'
+            table.loc[eligible_fit & usable & (snr <= min_area_snr),
+                      'bliss_score_status'] = 'low_area_snr'
+    observed['gmm_label'] = np.nan
+    observed['bliss_score'] = np.nan
+    good = observed['bliss_score_status'].eq('eligible')
+    valid_null = synthetic[synthetic['bliss_score_status'].eq('eligible')].copy()
+    if not good.any():
+        return observed
+    if valid_null.empty:
+        observed.loc[good, 'bliss_score_status'] = 'no_valid_null_candidates'
+        return observed
+    scored = _eval_bliss_score_gmm_valid(
+        observed[good].copy(), valid_null, simx, x,
+        k_min=k_min, k_max=k_max, covariance_types=covariance_types,
+        show_plot=show_plot, n_sim=n_sim)
+    scored.index = observed.index[good]
+    scored['bliss_score_status'] = 'evaluated'
+    return pd.concat([scored, observed[~good]]).sort_index().reset_index(drop=True)

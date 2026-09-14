@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
+from .fit_quality import annotate_fit_quality
 from .peak_selection import find_peaks_new
 from .gaussian_models import n_gaussian, p0_generator
 
@@ -175,7 +176,8 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
     list of dict
         One dictionary per fitted local Gaussian, containing amplitude,
         center, sigma, formal errors, block-level R-squared, and mean block
-        uncertainty. ``sigma_lower_bound`` records the imposed width floor;
+        uncertainty. ``cov_amplitude_sigma`` retains the amplitude/width
+        covariance from this joint fit. ``sigma_lower_bound`` records the width floor;
         ``sigma_at_lower_bound`` marks widths within 1% of a positive floor.
     """
     rows = []
@@ -226,7 +228,11 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
                     popt_ = np.reshape(popt, (-1, 3))
                     errors_ = np.reshape(errors, (-1, 3))
                     for k in range(len(good_peaks)):
-                        rows.append({'amplitude': popt_[k][0],
+                        rows.append({'fit_converged': True,
+                                     'fit_message': '',
+                                     'fit_block_id': block_index,
+                                     'fit_center_initial': p0[3*k + 1],
+                                     'amplitude': popt_[k][0],
                                      'center': popt_[k][1],
                                      'sigma': popt_[k][2],
                                      'sigma_lower_bound': bounds[0][3*k + 2],
@@ -236,12 +242,23 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
                                      'eamplitude': errors_[k][0],
                                      'ecenter': errors_[k][1],
                                      'esigma': errors_[k][2],
+                                     'cov_amplitude_sigma': pcov[3*k, 3*k + 2],
                                      'rsq': rsq,
                                      'noise_on_block': noise_on_block})
-                except RuntimeError as exc:
+                except (RuntimeError, ValueError) as exc:
                     print(f'Error fitting block {block_index}: {exc}')
-                except ValueError as exc:
-                    print(f'Error fitting block {block_index}: {exc}')
+                    # Preserve a diagnostic row per attempted component. The
+                    # center locates the attempted fit, not a measured centroid.
+                    for k in range(len(good_peaks)):
+                        rows.append(dict(
+                            center=p0[3*k + 1], fit_center_initial=p0[3*k + 1],
+                            amplitude=np.nan, sigma=np.nan, eamplitude=np.nan,
+                            ecenter=np.nan, esigma=np.nan,
+                            cov_amplitude_sigma=np.nan, rsq=np.nan,
+                            noise_on_block=noise_on_block,
+                            sigma_lower_bound=bounds[0][3*k + 2],
+                            sigma_at_lower_bound=False, fit_converged=False,
+                            fit_message=str(exc), fit_block_id=block_index))
     return rows
 
 
@@ -272,10 +289,13 @@ def _add_line_context(fitted, x, y, base):
         return fitted
     min_diff_positions = []
     for i in range(len(fitted)):
-        min_diff_index = np.argmin(np.abs(x - fitted.center.iloc[i]))
-        min_diff_positions.append(min_diff_index)
-    fitted['base_on_line'] = [base[pos] for pos in min_diff_positions]
-    fitted['value_on_line'] = [y[pos] for pos in min_diff_positions]
+        center = fitted.center.iloc[i]
+        min_diff_positions.append(int(np.argmin(np.abs(x - center)))
+                                  if np.isfinite(center) else None)
+    fitted['base_on_line'] = [base[pos] if pos is not None else np.nan
+                              for pos in min_diff_positions]
+    fitted['value_on_line'] = [y[pos] if pos is not None else np.nan
+                               for pos in min_diff_positions]
     fitted['relative_power'] = (fitted.value_on_line - fitted.base_on_line) / (fitted.value_on_line + fitted.base_on_line)
     return fitted
 
@@ -310,6 +330,9 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         Raw candidate-line table with Gaussian parameters, parameter errors,
         goodness-of-fit information, local continuum context, and instrumental
         ``response_sigma`` interpolated at each fitted centroid (NaN if absent).
+        Quality metadata retains failed attempts: their center is the initial
+        guess, their fitted amplitude/width/errors are NaN, and the failure
+        message is stored. Non-evaluable attempts are not detection claims.
     """
     blocks = _build_candidate_blocks(x, y, sy, ylines, base,
                                      response_sigma=response_sigma)
@@ -319,10 +342,13 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
             block, block_index, min_peak_separation=min_peak_separation))
     fitted = pd.DataFrame(rows, columns=['amplitude', 'center', 'sigma',
                                          'eamplitude', 'ecenter', 'esigma',
+                                         'cov_amplitude_sigma',
                                          'rsq', 'noise_on_block',
-                                         'sigma_lower_bound', 'sigma_at_lower_bound'])
+                                         'sigma_lower_bound', 'sigma_at_lower_bound',
+                                         'fit_converged', 'fit_message',
+                                         'fit_block_id', 'fit_center_initial'])
     fitted = _add_line_context(fitted, x, y, base)
     fitted['response_sigma'] = np.nan
     if response_sigma is not None and len(fitted):
         fitted['response_sigma'] = np.interp(fitted['center'], x, response_sigma)
-    return fitted.reset_index(drop=True)
+    return annotate_fit_quality(fitted).reset_index(drop=True)
