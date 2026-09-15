@@ -65,8 +65,8 @@ class BlindLineSearchConfig:
         ``curve_fit``.
 
     snr_confidence_threshold : float
-        Any available S/N diagnostic above which a candidate is assigned
-        bliss_score 1.
+        Deprecated compatibility option; ignored. S/N diagnostics never
+        overwrite the score from the observed/null candidate comparison.
 
     response_feature_threshold : float
         Robust score above which unusually sharp ARF effective-area
@@ -461,23 +461,6 @@ def _safe_divide(numerator, denominator):
     return out
 
 
-def _snr_confidence_mask(
-    lines: pd.DataFrame,
-    threshold: float,
-    *,
-    columns=('snr_peak', 'snr_area', 'snr_amplitude'),
-) -> pd.Series:
-    """Return rows where any available S/N diagnostic exceeds ``threshold``."""
-    if len(lines) == 0:
-        return pd.Series([], index=lines.index, dtype=bool)
-
-    high_snr = pd.Series(False, index=lines.index, dtype=bool)
-    for col in columns:
-        if col in lines.columns:
-            high_snr |= pd.to_numeric(lines[col], errors='coerce') >= threshold
-    return high_snr
-
-
 def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
     """Add pre-global-fit diagnostics to candidate lines.
 
@@ -531,7 +514,10 @@ def _ensure_line_context(
     *,
     snr_confidence_threshold: float = 4.0,
 ) -> pd.DataFrame:
-    """Ensure that user-filtered candidate tables contain final-fit context columns."""
+    """Fill fit context and diagnostics without changing the input score.
+
+    ``snr_confidence_threshold`` is accepted for compatibility and ignored.
+    """
     clean_lines = clean_lines.copy().reset_index(drop=True)
 
     if len(clean_lines) == 0:
@@ -566,18 +552,12 @@ def _ensure_line_context(
             (clean_lines['value_on_line'] - clean_lines['base_on_line']) / denom,
             np.nan,
         )
-    # Recompute diagnostics so legacy diagonal-only area errors cannot survive
-    # into the S/N shortcut. The global fit later supplies its own covariance.
+    # Recompute covariance-aware diagnostics without changing the input score.
+    # The global fit later supplies its own covariance.
     clean_lines = _add_candidate_metrics(clean_lines)
 
     if 'bliss_score' not in clean_lines.columns:
         clean_lines['bliss_score'] = np.nan
-
-    high_snr = _snr_confidence_mask(clean_lines, snr_confidence_threshold)
-    high_snr &= clean_lines['bliss_score'].notna()
-    if 'fit_evaluable' in clean_lines:
-        high_snr &= ~clean_lines['fit_evaluable'].eq(False)
-    clean_lines.loc[high_snr, 'bliss_score'] = 1.0
 
     for col in CANDIDATE_COLUMNS:
         if col not in clean_lines.columns:
@@ -601,6 +581,11 @@ def final_fit_and_metrics(
     """Refit selected candidates and compute final line diagnostics.
 
     Area errors use the final joint fit covariance, replacing local covariance.
+    Input ``bliss_score`` and ``bliss_score_status`` are preserved, including
+    when the global fit fails. They describe the earlier observed/null
+    comparison; use the updated ``fit_evaluable``, ``fit_status`` and
+    ``fit_reasons`` to assess the global fit separately.
+    ``snr_confidence_threshold`` is accepted for compatibility and ignored.
 
     The baseline parameters are used only when ``base``/``ylines`` are not
     provided; they must then match the values used for the candidate search.
@@ -731,8 +716,6 @@ def final_fit_and_metrics(
     )
 
     if len(result) == 0:
-        rejected['bliss_score'] = np.nan
-        rejected['bliss_score_status'] = 'invalid_fit'
         return rejected.reindex(columns=FINAL_OUTPUT_COLUMNS).reset_index(drop=True), yfit
 
     cols = [
@@ -871,17 +854,8 @@ def final_fit_and_metrics(
     result = _flag_response_features(result, spectrum, response_feature_threshold)
     result = result[FINAL_OUTPUT_COLUMNS]
 
-    high_snr = _snr_confidence_mask(
-        result,
-        snr_confidence_threshold,
-    )
-
-    high_snr &= result['fit_evaluable'] & result['bliss_score'].notna()
-    result.loc[high_snr, "bliss_score"] = 1.0
-    result.loc[~result['fit_evaluable'], 'bliss_score'] = np.nan
-    result.loc[~result['fit_evaluable'], 'bliss_score_status'] = 'invalid_fit'
-    rejected['bliss_score'] = np.nan
-    rejected['bliss_score_status'] = 'invalid_fit'
+    # Keep the observed/null score and its status as provenance. Global fit
+    # failures are recorded in the separate fit-quality columns above.
     result = pd.concat([result, rejected.reindex(columns=FINAL_OUTPUT_COLUMNS)],
                        ignore_index=True)
     return result, yfit
@@ -1063,8 +1037,9 @@ def fit_global(
     final_fit_maxfev : int, default: 100000
         Maximum number of function evaluations in ``curve_fit``.
     snr_confidence_threshold : float, default: 4.0
-        S/N threshold above which ``bliss_score`` is set to 1 if any of
-        ``snr_peak``, ``snr_area`` or ``snr_amplitude`` exceeds it.
+        Deprecated compatibility option; ignored. The input ``bliss_score``
+        and ``bliss_score_status`` are preserved regardless of S/N. Updated
+        fit-quality flags must be checked separately, including after failure.
     response_feature_threshold : float, default: 5.0
         ARF sharpness-score threshold for flagging fitted lines; pass the same
         value as in the candidate-search config. The returned table and CSV
@@ -1354,13 +1329,9 @@ class BlindLineSearchPipeline:
             self.config.response_feature_threshold,
         )
 
-        # Before the optional expensive global fit, force very significant
-        # candidates to bliss_score 1 if any S/N diagnostic is high. This
-        # makes the returned clean_lines table consistent with the final-fit output.
+        # Preserve the score assigned during the observed/null comparison.
         if 'bliss_score' not in clean_lines.columns:
             clean_lines['bliss_score'] = np.nan
-       # high_snr = _snr_confidence_mask(clean_lines, self.config.snr_confidence_threshold)
-        #clean_lines.loc[high_snr, 'bliss_score'] = 1.0
 
         for col in CANDIDATE_COLUMNS:
             if col not in clean_lines.columns:
