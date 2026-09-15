@@ -9,8 +9,9 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from .empirical_baseline import base_calculator
 from .fit_quality import annotate_fit_quality, FIT_QUALITY_COLUMNS
-from .candidate_regions import return_raw_lines
-from .gaussian_models import n_gaussian, p0_generator_final, gaussian_area_error
+from .candidate_regions import return_raw_lines, DEFAULT_SINGLE_COMPONENT_BIC_MARGIN
+from .gaussian_models import (n_gaussian, p0_generator_final, gaussian_area_error,
+                              fit_gaussian_components, LOCAL_MODEL_COLUMNS)
 from ..synthetic_probability.synthetic_spectra import generate_null_realizations
 from ..synthetic_probability.gmm_score import eval_bliss_score_gmm
 from ..plotting.run_output_manager import ensure_output_folder
@@ -78,6 +79,13 @@ class BlindLineSearchConfig:
         Default 1.0 excludes areas compatible with zero within one formal
         error. Set None to restore the previous eligibility rules.
 
+    single_component_bic_margin : float or None
+        In blocks with at least two instrumentally fixed widths, try one
+        resolved Gaussian before GMM scoring. Require this BIC improvement
+        over the multiple fit (default 6); None disables the comparison.
+        The same rule is applied to observed and null candidates, adding
+        at most one fit per eligible block and no extra null realizations.
+
     max_sigma_line : float
         Maximum Gaussian sigma allowed for an individual line candidate,
         in keV.
@@ -135,6 +143,7 @@ class BlindLineSearchConfig:
 
     # Reversible area-significance preselection before the GMM.
     min_area_snr: Optional[float] = 1.0
+    single_component_bic_margin: Optional[float] = DEFAULT_SINGLE_COMPONENT_BIC_MARGIN
 
 
 
@@ -497,7 +506,7 @@ def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
     lines['area'] = lines['amplitude'] * lines['sigma'] * k
     lines['earea'] = gaussian_area_error(
         lines['amplitude'], lines['sigma'], lines['eamplitude'], lines['esigma'],
-        lines['cov_amplitude_sigma'],
+        lines['cov_amplitude_sigma'], sigma_fixed=lines.get('sigma_fixed', False),
     )
     lines['snr_area'] = _safe_divide(lines['area'], lines['earea'])
 
@@ -581,6 +590,9 @@ def final_fit_and_metrics(
     """Refit selected candidates and compute final line diagnostics.
 
     Area errors use the final joint fit covariance, replacing local covariance.
+    Instrumentally fixed local widths stay fixed; newly sub-instrumental
+    global widths are fixed in at most one additional joint fit. Their sigma
+    errors are unavailable (NaN), and all errors are conditional on fixed widths.
     Input ``bliss_score`` and ``bliss_score_status`` are preserved, including
     when the global fit fails. They describe the earlier observed/null
     comparison; use the updated ``fit_evaluable``, ``fit_status`` and
@@ -618,6 +630,8 @@ def final_fit_and_metrics(
         clean_lines = clean_lines[~clean_lines['fit_evaluable'].eq(False)].reset_index(drop=True)
     global_converged = False
     global_message = ''
+    width_fixed = clean_lines['sigma_fixed'].eq(True).fillna(False).to_numpy()
+    reference_centers = clean_lines['sigma_reference_center'].to_numpy(dtype=float)
     fitted_final = pd.DataFrame(
         columns=[
             "amplitude",
@@ -661,19 +675,20 @@ def final_fit_and_metrics(
         )
 
         try:
-            popt, pcov = curve_fit(
-                n_gaussian,
-                spectrum.energy,
-                ylines,
-                p0=p0,
-                bounds=bounds,
-                sigma=fit_sigma,
-                absolute_sigma=True,
-                maxfev=final_fit_maxfev,
+            inherited_widths = clean_lines['sigma'].to_numpy(dtype=float)
+            if np.any(width_fixed & (~np.isfinite(inherited_widths) | (inherited_widths <= 0))):
+                raise ValueError('Inherited fixed widths must be finite and positive.')
+            popt, pcov, width_fixed, reference_centers = fit_gaussian_components(
+                spectrum.energy, ylines, p0, bounds, fit_sigma,
+                response_sigma=spectrum.response_sigma,
+                fixed_widths=np.where(width_fixed, inherited_widths, np.nan),
+                reference_centers=reference_centers,
+                maxfev=final_fit_maxfev, optimizer=curve_fit,
             )
 
             global_converged = True
             errors = np.sqrt(np.diag(pcov))
+            errors[2::3][width_fixed] = np.nan
 
             yfit = n_gaussian(
                 spectrum.energy,
@@ -756,9 +771,13 @@ def final_fit_and_metrics(
         * k
     )
 
+    result['sigma_fixed'] = width_fixed
+    result['sigma_reference_center'] = reference_centers
+    result['fit_uncertainty'] = ('conditional_on_fixed_widths' if width_fixed.any()
+                                 else 'free_widths') if global_converged else 'unavailable'
     result["earea"] = gaussian_area_error(
         result["amplitude"], result["sigma"], result["eamplitude"], result["esigma"],
-        result["cov_amplitude_sigma"],
+        result["cov_amplitude_sigma"], sigma_fixed=result["sigma_fixed"],
     )
 
     result["snr_area"] = _safe_divide(
@@ -818,7 +837,7 @@ def final_fit_and_metrics(
         | (result["ecenter"] > center_bound_width)
     )
 
-    bad_sigma_error = (
+    bad_sigma_error = ~result["sigma_fixed"] & (
         ~np.isfinite(result["esigma"])
         | (result["esigma"] > sigma_bound_width)
     )
@@ -838,7 +857,7 @@ def final_fit_and_metrics(
 
     result['sigma_lower_bound'] = np.asarray(bounds[0], dtype=float)[2::3]
     result['sigma_at_lower_bound'] = (
-        (result['sigma_lower_bound'] > 0)
+        ~result['sigma_fixed'] & (result['sigma_lower_bound'] > 0)
         & (result['sigma'] <= 1.01 * result['sigma_lower_bound'])
     )
 
@@ -846,6 +865,10 @@ def final_fit_and_metrics(
     result['fit_message'] = global_message
     result['fit_center_initial'] = clean_lines['center'].to_numpy()
     result['fit_block_id'] = np.nan  # the global fit is not a local block
+    # These describe local model selection before the GMM, not a new global
+    # BIC comparison. Retain them together with the score's provenance.
+    for col in LOCAL_MODEL_COLUMNS:
+        result[col] = clean_lines[col].to_numpy()
     if not global_converged:
         result['center'] = result['fit_center_initial']
     result = annotate_fit_quality(result)
@@ -1221,6 +1244,7 @@ class BlindLineSearchPipeline:
             ylines,
             base,
             response_sigma=spectrum.response_sigma,
+            single_component_bic_margin=self.config.single_component_bic_margin,
         )
 
         # ------------------------------------------------------------
@@ -1244,6 +1268,7 @@ class BlindLineSearchPipeline:
                 null.ylines,
                 null.baseline,
                 response_sigma=null.response_sigma,
+                single_component_bic_margin=self.config.single_component_bic_margin,
             )
             cand["sim"] = k
             synthetic_tables.append(cand)

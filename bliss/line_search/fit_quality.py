@@ -1,10 +1,11 @@
 """Keep numerical fit quality separate from candidate detection scores."""
 import numpy as np
 import pandas as pd
+from .gaussian_models import WIDTH_FIT_COLUMNS, LOCAL_MODEL_COLUMNS
 
 FIT_QUALITY_COLUMNS = ['fit_converged', 'fit_status', 'fit_evaluable',
                        'fit_reasons', 'fit_message', 'fit_block_id',
-                       'fit_center_initial']
+                       'fit_center_initial', *WIDTH_FIT_COLUMNS, *LOCAL_MODEL_COLUMNS]
 # Relative machine-precision guard, not an astrophysical significance cut.
 RELATIVE_ERROR_FLOOR = np.sqrt(np.finfo(float).eps)
 
@@ -15,10 +16,24 @@ def annotate_fit_quality(lines):
     No intensity or area cut is used. Errors <= sqrt(machine epsilon) times
     the parameter scale are numerically suspect. Centroid errors use sigma
     as their scale so the rule does not depend on the energy origin.
+    Explicitly fixed widths may have NaN (or conditional zero) esigma with
+    zero amplitude/width covariance; their other errors are still checked.
     Large relative errors and the existing width-bound flag only request
     review. Missing convergence metadata is unknown, not a recorded success.
     """
     result = lines.copy()
+    for col in LOCAL_MODEL_COLUMNS:
+        if col not in result:
+            result[col] = ('not_recorded' if col == 'local_model_selection' else
+                           '' if col == 'local_model_selection_message' else np.nan)
+    if 'sigma_fixed' not in result:
+        result['sigma_fixed'] = False
+    fixed = result['sigma_fixed'].eq(True).fillna(False).to_numpy(dtype=bool)
+    result['sigma_fixed'] = fixed
+    if 'sigma_reference_center' not in result:
+        result['sigma_reference_center'] = np.nan
+    if 'fit_uncertainty' not in result:
+        result['fit_uncertainty'] = np.where(fixed, 'conditional_on_fixed_widths', 'free_widths')
     for col in ['fit_converged', 'fit_block_id', 'fit_center_initial']:
         if col not in result:
             result[col] = np.nan
@@ -47,17 +62,21 @@ def annotate_fit_quality(lines):
     mark(~np.isfinite(amp) | ~np.isfinite(center) | ~np.isfinite(sigma),
          'nonfinite_parameters')
     mark((amp <= 0) | (sigma <= 0), 'nonpositive_parameters')
+    mark(fixed & ~(np.isnan(values('esigma')) | (values('esigma') == 0)),
+         'invalid_fixed_sigma_error')
+    mark(fixed & (values('cov_amplitude_sigma') != 0), 'invalid_fixed_sigma_covariance')
     for col, scale in [('eamplitude', np.abs(amp)), ('ecenter', np.abs(sigma)),
                        ('esigma', np.abs(sigma))]:
         error = values(col)
-        mark(~np.isfinite(error) | (error <= 0), 'invalid_' + col)
-        mark(np.isfinite(error) & (error > 0) & np.isfinite(scale)
+        active = ~fixed if col == 'esigma' else np.ones(len(result), dtype=bool)
+        mark(active & (~np.isfinite(error) | (error <= 0)), 'invalid_' + col)
+        mark(active & np.isfinite(error) & (error > 0) & np.isfinite(scale)
              & (error <= RELATIVE_ERROR_FLOOR * scale),
              'numerically_suspect_' + col)
-        mark(np.isfinite(error) & np.isfinite(scale) & (error > scale),
+        mark(active & np.isfinite(error) & np.isfinite(scale) & (error > scale),
              'large_' + col, fatal=False)
     if 'sigma_at_lower_bound' in result:
-        mark(result['sigma_at_lower_bound'].eq(True).fillna(False),
+        mark(~fixed & result['sigma_at_lower_bound'].eq(True).fillna(False),
              'sigma_at_lower_bound', fatal=False)
     if 'fit_status' in result:
         # Recompute rather than retaining stale annotations after a refit.

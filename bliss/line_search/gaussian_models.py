@@ -1,5 +1,12 @@
 """Gaussian models and initial-parameter generators used by BLiSS fits."""
 import numpy as np
+from scipy.optimize import curve_fit
+
+WIDTH_FIT_COLUMNS = ['sigma_fixed', 'sigma_reference_center', 'fit_uncertainty']
+LOCAL_MODEL_COLUMNS = ['local_model_selection', 'local_n_components_initial',
+                       'local_n_components_selected', 'local_bic_single',
+                       'local_bic_multiple', 'local_bic_delta',
+                       'local_model_selection_message']
 
 MIN_INSTRUMENTAL_SIGMA_FRACTION = 0.1
 
@@ -47,8 +54,82 @@ def n_gaussian(x, *params):
     return y
 
 
+def fit_gaussian_components(x, y, p0, bounds, uncertainties, *,
+                            response_sigma=None, fixed_widths=None,
+                            reference_centers=None, maxfev=100000,
+                            optimizer=curve_fit):
+    """Fit a Gaussian sum, then fix sub-instrumental widths in one refit.
+
+    Only free parameters are passed to the optimizer. Inherited fixed widths
+    remain fixed, including in the global fit. After the first fit, each free
+    sigma below the valid instrumental sigma at its fitted center is replaced
+    by that instrumental value; the block is refitted at most once. The
+    lookup center/value are frozen for that refit, not updated iteratively.
+    Missing/invalid response values or centers outside the response grid do
+    not trigger fixation. Other free
+    widths are not reclassified after the second fit.
+
+    Returns full parameters/covariance, the per-component fixed mask and the
+    resolution lookup centers. Covariance rows/columns for fixed sigmas are
+    zero *conditionally*, not measured zero-error widths. Callers export
+    their esigma as NaN with sigma_fixed=True. All parameter uncertainties in
+    a block with any fixed width are conditional on those imposed widths.
+    """
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    initial = np.asarray(p0, dtype=float).copy()
+    lower, upper = (np.asarray(b, dtype=float) for b in bounds)
+    count = len(initial) // 3
+    widths = (np.full(count, np.nan) if fixed_widths is None
+              else np.asarray(fixed_widths, dtype=float).copy())
+    centers = (np.full(count, np.nan) if reference_centers is None
+               else np.asarray(reference_centers, dtype=float).copy())
+    if len(initial) != 3 * count or widths.shape != (count,) or centers.shape != (count,):
+        raise ValueError('Gaussian parameter/width metadata shapes do not match.')
+    if np.any(~np.isnan(widths) & (~np.isfinite(widths) | (widths <= 0))):
+        raise ValueError('Fixed Gaussian widths must be finite and positive.')
+    fixed = np.isfinite(widths)
+    initial[2::3] = np.where(fixed, widths, initial[2::3])
+
+    def solve(start):
+        free = np.ones(len(start), dtype=bool)
+        free[2::3] = ~fixed
+        template = start.copy()
+
+        def model(coordinates, *parameters):
+            full = template.copy()
+            full[free] = parameters
+            return n_gaussian(coordinates, *full)
+
+        optimal, covariance = optimizer(
+            model, x, y, p0=start[free], bounds=(lower[free], upper[free]),
+            sigma=uncertainties, absolute_sigma=True, maxfev=maxfev)
+        template[free] = optimal
+        full_covariance = np.zeros((len(start), len(start)), dtype=float)
+        full_covariance[np.ix_(free, free)] = covariance
+        return template, full_covariance
+
+    optimal, covariance = solve(initial)
+    if response_sigma is not None:
+        response = np.asarray(response_sigma, dtype=float)
+        if response.shape != x.shape:
+            raise ValueError('Instrumental resolution must align with the fit grid.')
+        instrumental = np.interp(optimal[1::3], x, response)
+        newly_fixed = (~fixed & np.isfinite(instrumental) & (instrumental > 0)
+                       & (optimal[1::3] >= x[0]) & (optimal[1::3] <= x[-1])
+                       & (optimal[2::3] < instrumental))
+        if np.any(newly_fixed):
+            centers[newly_fixed] = optimal[1::3][newly_fixed]
+            fixed |= newly_fixed
+            optimal[2::3][newly_fixed] = instrumental[newly_fixed]
+            try:
+                optimal, covariance = solve(optimal)
+            except (RuntimeError, ValueError) as exc:
+                raise RuntimeError(f'Instrumental-width refit failed: {exc}') from exc
+    return optimal, covariance, fixed, centers
+
+
 def gaussian_area_error(amplitude, sigma, eamplitude, esigma,
-                        cov_amplitude_sigma):
+                        cov_amplitude_sigma, sigma_fixed=False):
     """Propagate the full amplitude/width covariance to Gaussian area.
 
     For area = sqrt(2*pi) * amplitude * sigma, the first-order variance is
@@ -57,11 +138,14 @@ def gaussian_area_error(amplitude, sigma, eamplitude, esigma,
     Inputs broadcast as NumPy arrays. Missing/nonfinite covariance, invalid
     parameter errors, or an inconsistent covariance block return NaN; missing
     covariance is never interpreted as zero. This is a local linear error
-    estimate, not a calibrated detection significance.
+    estimate, not a calibrated detection significance. For explicitly fixed
+    widths, esigma may be NaN or zero and cov_amplitude_sigma must be zero;
+    the returned error is conditional: sqrt(2*pi) * abs(sigma) * eamplitude.
     """
-    amp, width, ea, ew, cov = np.broadcast_arrays(*[
+    amp, width, ea, ew, cov, fixed = np.broadcast_arrays(*[
         np.asarray(v, dtype=float) for v in
-        (amplitude, sigma, eamplitude, esigma, cov_amplitude_sigma)])
+        (amplitude, sigma, eamplitude, esigma, cov_amplitude_sigma, sigma_fixed)])
+    fixed = fixed == 1
     with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
         rho = (cov / ea) / ew
         valid = (np.isfinite(amp) & np.isfinite(width)
@@ -78,7 +162,14 @@ def gaussian_area_error(amplitude, sigma, eamplitude, esigma,
         # when amplitude and width are strongly anticorrelated.
         error = (np.sqrt(2 * np.pi) * scale
                  * np.hypot(u + rho * v, np.sqrt((1 - rho) * (1 + rho)) * v))
-    return np.where(valid & np.isfinite(error), error, np.nan)
+    free_error = np.where(valid & np.isfinite(error), error, np.nan)
+    with np.errstate(over='ignore', invalid='ignore'):
+        conditional_error = np.sqrt(2 * np.pi) * np.abs(width) * ea
+    fixed_valid = (np.isfinite(amp) & np.isfinite(width) & (width > 0)
+                   & np.isfinite(ea) & (ea > 0)
+                   & (np.isnan(ew) | (ew == 0)) & (cov == 0)
+                   & np.isfinite(conditional_error))
+    return np.where(fixed, np.where(fixed_valid, conditional_error, np.nan), free_error)
 
 def p0_generator(x, y, good_peaks_dataframe, response_sigma=None):
     """Build initial parameters and bounds for fitting local candidate peaks.

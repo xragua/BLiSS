@@ -174,6 +174,7 @@ def _eval_bliss_score_gmm_valid(lines, simlines, simx, x, k_min=1, k_max=20, cov
         lines_sim_real['amplitude'], lines_sim_real['sigma'],
         lines_sim_real['eamplitude'], lines_sim_real['esigma'],
         lines_sim_real.get('cov_amplitude_sigma', np.nan),
+        sigma_fixed=lines_sim_real.get('sigma_fixed', False),
     )
     lines_sim_real['area_snr'] = np.where(
         lines_sim_real['earea'] > 0,
@@ -312,7 +313,9 @@ def eval_bliss_score_gmm(lines, simlines, simx, x, k_min=1, k_max=20,
                 'amplitude', 'sigma', 'eamplitude', 'esigma', 'cov_amplitude_sigma',
             ]).apply(pd.to_numeric, errors='coerce')
             area = (np.sqrt(2 * np.pi) * params.amplitude * params.sigma).to_numpy()
-            error = gaussian_area_error(*[params[col] for col in params.columns])
+            error = gaussian_area_error(
+                *[params[col] for col in params.columns],
+                sigma_fixed=table.get('sigma_fixed', False))
             usable = np.isfinite(area) & np.isfinite(error) & (error > 0)
             snr = np.divide(area, error, out=np.full(len(table), np.nan), where=usable)
             table['area'], table['earea'], table['area_snr'] = area, error, snr
