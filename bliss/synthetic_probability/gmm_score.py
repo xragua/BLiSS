@@ -23,7 +23,7 @@ class GMMBlissScoreEvaluator:
     """
 
     def __init__(self, k_min=1, k_max=20, covariance_types=('full',),
-                 min_area_snr=1.0):
+                 min_area_snr=None):
         """Create a Gaussian-mixture score evaluator.
 
         Parameters
@@ -35,9 +35,9 @@ class GMMBlissScoreEvaluator:
             number of samples.
         covariance_types : tuple of str, default: ("full",)
             Covariance structures passed to ``sklearn.mixture.GaussianMixture``.
-        min_area_snr : float or None, default: 1.0
+        min_area_snr : float or None, default: None
             Require covariance-aware area S/N strictly above this value in both
-            populations. None disables this experimental preselection.
+            populations when specified. None disables this optional cut.
         """
         self.k_min = k_min
         self.k_max = k_max
@@ -271,17 +271,15 @@ def _eval_bliss_score_gmm_valid(lines, simlines, simx, x, k_min=1, k_max=20, cov
 
 def eval_bliss_score_gmm(lines, simlines, simx, x, k_min=1, k_max=20,
                               covariance_types=('full',), show_plot=False, n_sim=1,
-                              min_area_snr=1.0):
+                              min_area_snr=None):
     """Score evaluable observed/null fits, preserving every observed row.
 
     The GMM variables and score formula are unchanged. Failed fits, invalid
     parameters and unusable formal errors are excluded symmetrically before
-    scaling, clustering and candidate-rate calculations. By default, evaluable
-    fits must also have covariance-aware area S/N > 1: the symmetric one-error
-    interval must exclude zero. This is experimental preselection, not a
-    calibrated detection significance. ``min_area_snr=None`` disables it and
-    restores the previous eligibility rules. Nonnegative finite thresholds
-    are accepted. Missing/nonpositive area errors cannot pass an enabled cut.
+    scaling, clustering and candidate-rate calculations. By default no area
+    S/N cut is applied (``min_area_snr=None``). An explicit nonnegative finite
+    threshold enables optional preselection; missing/nonpositive area errors
+    cannot pass an enabled cut.
 
     Excluded rows retain their fit-quality metadata and NaN scores. Their
     ``bliss_score_status`` distinguishes ``low_area_snr`` from ``invalid_area_error``

@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from .empirical_baseline import base_calculator
 from .fit_quality import annotate_fit_quality, FIT_QUALITY_COLUMNS
-from .candidate_regions import return_raw_lines, DEFAULT_SINGLE_COMPONENT_BIC_MARGIN
+from .candidate_regions import return_raw_lines
 from .gaussian_models import (n_gaussian, p0_generator_final, gaussian_area_error,
-                              fit_gaussian_components, LOCAL_MODEL_COLUMNS)
+                              fit_gaussian_components)
 from ..synthetic_probability.synthetic_spectra import generate_null_realizations
 from ..synthetic_probability.gmm_score import eval_bliss_score_gmm
 from ..plotting.run_output_manager import ensure_output_folder
@@ -22,6 +22,8 @@ from ..spectrum_data.fits_spectrum_loader import (
 )
 from ..spectrum_data.rebinning_tools import rebin_counts
 
+# Full working schema: retain covariance, fit context and quality diagnostics
+# until all fitting and energy-window selection have finished.
 LINE_OUTPUT_COLUMNS = [
     'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
     'cov_amplitude_sigma',
@@ -34,14 +36,16 @@ LINE_OUTPUT_COLUMNS = [
 
 CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
 FINAL_OUTPUT_COLUMNS = [
-    'center', 'ecenter', 'sigma', 'esigma', 'amplitude', 'eamplitude',
-    'cov_amplitude_sigma',
-    'relative_power', 'noise_on_block', 'value_on_line',
-    'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'bliss_score',
-    'response_feature', 'response_feature_score',
-    'sigma_lower_bound', 'sigma_at_lower_bound',
-    'bliss_score_status', *FIT_QUALITY_COLUMNS,]
+    'center', 'ecenter',
+    'sigma', 'esigma',
+    'amplitude', 'eamplitude',
+    'area', 'earea',
+    'ew',
+    'snr_area',
+    'bliss_score',
+    'fit_status',
+    'response_feature',
+]
 
 
 @dataclass
@@ -74,17 +78,8 @@ class BlindLineSearchConfig:
         structure is flagged.
 
     min_area_snr : float or None
-        Experimental GMM preselection: require covariance-aware area S/N
-        strictly above this threshold in observed and null candidates.
-        Default 1.0 excludes areas compatible with zero within one formal
-        error. Set None to restore the previous eligibility rules.
-
-    single_component_bic_margin : float or None
-        In blocks with at least two instrumentally fixed widths, try one
-        resolved Gaussian before GMM scoring. Require this BIC improvement
-        over the multiple fit (default 6); None disables the comparison.
-        The same rule is applied to observed and null candidates, adding
-        at most one fit per eligible block and no extra null realizations.
+        Optional GMM preselection on covariance-aware area S/N, applied to
+        observed and null candidates. None (default) disables this cut.
 
     max_sigma_line : float
         Maximum Gaussian sigma allowed for an individual line candidate,
@@ -141,9 +136,8 @@ class BlindLineSearchConfig:
     rebin_scale: Optional[float] = None
     rebin_min_bins: int = 1
 
-    # Reversible area-significance preselection before the GMM.
-    min_area_snr: Optional[float] = 1.0
-    single_component_bic_margin: Optional[float] = DEFAULT_SINGLE_COMPONENT_BIC_MARGIN
+    # No area-significance cut before the GMM by default.
+    min_area_snr: Optional[float] = None
 
 
 
@@ -593,10 +587,10 @@ def final_fit_and_metrics(
     Instrumentally fixed local widths stay fixed; newly sub-instrumental
     global widths are fixed in at most one additional joint fit. Their sigma
     errors are unavailable (NaN), and all errors are conditional on fixed widths.
-    Input ``bliss_score`` and ``bliss_score_status`` are preserved, including
-    when the global fit fails. They describe the earlier observed/null
-    comparison; use the updated ``fit_evaluable``, ``fit_status`` and
-    ``fit_reasons`` to assess the global fit separately.
+    Input ``bliss_score`` is preserved, including when the global fit fails.
+    It describes the earlier observed/null comparison; use the updated
+    ``fit_status`` to assess the global fit separately. The returned table
+    contains exactly ``FINAL_OUTPUT_COLUMNS``; full diagnostics stay internal.
     ``snr_confidence_threshold`` is accepted for compatibility and ignored.
 
     The baseline parameters are used only when ``base``/``ylines`` are not
@@ -607,6 +601,35 @@ def final_fit_and_metrics(
     ``response_feature_threshold``. Without usable ARF data, the flag is False
     (not flagged) and the score is NaN (unavailable).
     """
+
+    result, yfit = _fit_global_with_diagnostics(
+        spectrum=spectrum,
+        clean_lines=clean_lines,
+        base=base,
+        ylines=ylines,
+        final_fit_maxfev=final_fit_maxfev,
+        snr_confidence_threshold=snr_confidence_threshold,
+        baseline_window=baseline_window,
+        max_range_fraction=max_range_fraction,
+        min_points=min_points,
+        response_feature_threshold=response_feature_threshold,
+    )
+    return result.reindex(columns=FINAL_OUTPUT_COLUMNS).copy(), yfit
+
+
+def _fit_global_with_diagnostics(
+    spectrum: PreparedSpectrum,
+    clean_lines: pd.DataFrame,
+    base: Optional[np.ndarray] = None,
+    ylines: Optional[np.ndarray] = None,
+    final_fit_maxfev: int = 100000,
+    snr_confidence_threshold: float = 4.0,
+    baseline_window=0.4,
+    max_range_fraction: float = 0.2,
+    min_points: int = 3,
+    response_feature_threshold: float = 5.0,
+):
+    """Compute the global fit, retaining context until final output selection."""
 
     base, ylines = _baseline_and_line_excess(
         spectrum,
@@ -731,7 +754,7 @@ def final_fit_and_metrics(
     )
 
     if len(result) == 0:
-        return rejected.reindex(columns=FINAL_OUTPUT_COLUMNS).reset_index(drop=True), yfit
+        return rejected.reindex(columns=LINE_OUTPUT_COLUMNS).reset_index(drop=True), yfit
 
     cols = [
         "amplitude",
@@ -865,21 +888,17 @@ def final_fit_and_metrics(
     result['fit_message'] = global_message
     result['fit_center_initial'] = clean_lines['center'].to_numpy()
     result['fit_block_id'] = np.nan  # the global fit is not a local block
-    # These describe local model selection before the GMM, not a new global
-    # BIC comparison. Retain them together with the score's provenance.
-    for col in LOCAL_MODEL_COLUMNS:
-        result[col] = clean_lines[col].to_numpy()
     if not global_converged:
         result['center'] = result['fit_center_initial']
     result = annotate_fit_quality(result)
     result['bliss_score_status'] = (clean_lines['bliss_score_status'].to_numpy()
                               if 'bliss_score_status' in clean_lines else 'unavailable')
     result = _flag_response_features(result, spectrum, response_feature_threshold)
-    result = result[FINAL_OUTPUT_COLUMNS]
+    result = result[LINE_OUTPUT_COLUMNS]
 
     # Keep the observed/null score and its status as provenance. Global fit
     # failures are recorded in the separate fit-quality columns above.
-    result = pd.concat([result, rejected.reindex(columns=FINAL_OUTPUT_COLUMNS)],
+    result = pd.concat([result, rejected.reindex(columns=LINE_OUTPUT_COLUMNS)],
                        ignore_index=True)
     return result, yfit
 
@@ -1061,13 +1080,13 @@ def fit_global(
         Maximum number of function evaluations in ``curve_fit``.
     snr_confidence_threshold : float, default: 4.0
         Deprecated compatibility option; ignored. The input ``bliss_score``
-        and ``bliss_score_status`` are preserved regardless of S/N. Updated
-        fit-quality flags must be checked separately, including after failure.
+        is preserved regardless of S/N. Check ``fit_status`` separately,
+        including after failure.
     response_feature_threshold : float, default: 5.0
         ARF sharpness-score threshold for flagging fitted lines; pass the same
         value as in the candidate-search config. The returned table and CSV
-        include ``response_feature`` and ``response_feature_score``. With no
-        usable ARF, these are False (not flagged) and NaN (unavailable).
+        include ``response_feature``. With no usable ARF, it is False
+        (not flagged); the numeric feature score stays internal.
     return_yfit : bool, default: False
         If true, return ``(result, yfit)`` instead of only ``result``.
     energy_min, energy_max : float or None, default=None
@@ -1079,7 +1098,8 @@ def fit_global(
     Returns
     -------
     pandas.DataFrame or tuple
-        Final fitted line table, optionally with the fitted line-only model.
+        Final fitted line table with exactly ``FINAL_OUTPUT_COLUMNS``,
+        optionally with the fitted line-only model.
     """
 
     base, ylines = _baseline_and_line_excess(
@@ -1244,7 +1264,6 @@ class BlindLineSearchPipeline:
             ylines,
             base,
             response_sigma=spectrum.response_sigma,
-            single_component_bic_margin=self.config.single_component_bic_margin,
         )
 
         # ------------------------------------------------------------
@@ -1268,7 +1287,6 @@ class BlindLineSearchPipeline:
                 null.ylines,
                 null.baseline,
                 response_sigma=null.response_sigma,
-                single_component_bic_margin=self.config.single_component_bic_margin,
             )
             cand["sim"] = k
             synthetic_tables.append(cand)
@@ -1308,7 +1326,7 @@ class BlindLineSearchPipeline:
         # Optional global fit over the padded interval,
         # but only for candidates whose centroids are inside en1--en2
         # ------------------------------------------------------------
-        result, yfit = final_fit_and_metrics(
+        result, yfit = _fit_global_with_diagnostics(
             spectrum=spectrum,
             base=base,
             ylines=ylines,
@@ -1319,7 +1337,7 @@ class BlindLineSearchPipeline:
         )
 
         # Safety: keep only nominal-window lines after final fitting too
-        result = self._select_candidates(
+        result = self._select_energy_window(
             result,
             en1=en1_use,
             en2=en2_use,
@@ -1334,19 +1352,26 @@ class BlindLineSearchPipeline:
                 show_plot=True,
             )
 
+        result = result.reindex(columns=FINAL_OUTPUT_COLUMNS).copy()
         self._write_outputs(result, output_dir)
         return result
-    def _select_candidates(self, candidates: pd.DataFrame, *, en1: float, en2: float) -> pd.DataFrame:
-        """Restrict candidate lines to the requested energy interval."""
+
+    @staticmethod
+    def _select_energy_window(candidates: pd.DataFrame, *, en1: float, en2: float) -> pd.DataFrame:
+        """Restrict rows without recomputing fitted metrics or dropping context."""
         clean_lines = candidates.copy()
         selection_center = clean_lines.center.copy()
         if 'fit_center_initial' in clean_lines:
             selection_center = selection_center.where(
                 np.isfinite(selection_center), clean_lines['fit_center_initial'])
         # Keep unlocalizable failed rows as diagnostics rather than losing them.
-        clean_lines = clean_lines[
+        return clean_lines[
             selection_center.between(en1, en2) | ~np.isfinite(selection_center)
         ].reset_index(drop=True)
+
+    def _select_candidates(self, candidates: pd.DataFrame, *, en1: float, en2: float) -> pd.DataFrame:
+        """Select local candidates and compute the metrics needed for refitting."""
+        clean_lines = self._select_energy_window(candidates, en1=en1, en2=en2)
         clean_lines = _add_candidate_metrics(clean_lines)
         clean_lines = _flag_response_features(
             clean_lines,

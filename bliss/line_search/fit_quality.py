@@ -1,11 +1,11 @@
 """Keep numerical fit quality separate from candidate detection scores."""
 import numpy as np
 import pandas as pd
-from .gaussian_models import WIDTH_FIT_COLUMNS, LOCAL_MODEL_COLUMNS
+from .gaussian_models import WIDTH_FIT_COLUMNS
 
 FIT_QUALITY_COLUMNS = ['fit_converged', 'fit_status', 'fit_evaluable',
                        'fit_reasons', 'fit_message', 'fit_block_id',
-                       'fit_center_initial', *WIDTH_FIT_COLUMNS, *LOCAL_MODEL_COLUMNS]
+                       'fit_center_initial', *WIDTH_FIT_COLUMNS]
 # Relative machine-precision guard, not an astrophysical significance cut.
 RELATIVE_ERROR_FLOOR = np.sqrt(np.finfo(float).eps)
 
@@ -22,10 +22,6 @@ def annotate_fit_quality(lines):
     review. Missing convergence metadata is unknown, not a recorded success.
     """
     result = lines.copy()
-    for col in LOCAL_MODEL_COLUMNS:
-        if col not in result:
-            result[col] = ('not_recorded' if col == 'local_model_selection' else
-                           '' if col == 'local_model_selection_message' else np.nan)
     if 'sigma_fixed' not in result:
         result['sigma_fixed'] = False
     fixed = result['sigma_fixed'].eq(True).fillna(False).to_numpy(dtype=bool)

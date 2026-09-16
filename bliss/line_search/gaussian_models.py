@@ -3,10 +3,6 @@ import numpy as np
 from scipy.optimize import curve_fit
 
 WIDTH_FIT_COLUMNS = ['sigma_fixed', 'sigma_reference_center', 'fit_uncertainty']
-LOCAL_MODEL_COLUMNS = ['local_model_selection', 'local_n_components_initial',
-                       'local_n_components_selected', 'local_bic_single',
-                       'local_bic_multiple', 'local_bic_delta',
-                       'local_model_selection_message']
 
 MIN_INSTRUMENTAL_SIGMA_FRACTION = 0.1
 
@@ -214,7 +210,7 @@ def p0_generator(x, y, good_peaks_dataframe, response_sigma=None):
             if (good_peaks_dataframe.twidth.loc[i] < 0.05) & (good_peaks_dataframe.twidth.loc[i] > 0):
                 sigma_guess = good_peaks_dataframe.twidth.loc[i]
             else:
-                sigma_guess = 0.05
+                sigma_guess = 0.001
         p0.append(sigma_guess)
         bound_low.append(y[good_peaks_dataframe.position.loc[i]] * 0)
         bound_low.append(good_peaks_dataframe.energy.loc[i] * 0.99)
