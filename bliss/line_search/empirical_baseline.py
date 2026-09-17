@@ -17,10 +17,10 @@ def choose_baseline_window(
 
     baseline_window : float, array-like, or callable, default=0.4
         Preferred running-median width in the same units as energy.
-        A callable ``f(energy)`` is evaluated on the input grid, so the
-        same configuration works on grids of different lengths (e.g.
-        data and synthetic null realizations). A static array must have
-        the same shape as ``energy``.
+        A callable ``f(energy)`` is evaluated on the input grid. A static
+        array must have the same shape as ``energy``. The search pipeline
+        resolves widths on the full observed grid and interpolates those
+        effective widths onto the synthetic null grids.
 
     max_range_fraction : float, default=0.2
         Maximum allowed window as a fraction of the total

@@ -1082,12 +1082,13 @@ class BlindLineSearchPipeline:
         # ------------------------------------------------------------
         # Baseline from the full spectrum
         # ------------------------------------------------------------
-        base_full = base_calculator(
+        base_full, baseline_info = base_calculator(
             spectrum_full.energy,
             spectrum_full.values,
             baseline_window=self.config.baseline_window,
             max_range_fraction=self.config.max_range_fraction,
             min_points=self.config.min_points,
+            return_info=True,
         )
 
         ylines_full = np.maximum(spectrum_full.values - base_full,0)
@@ -1122,6 +1123,7 @@ class BlindLineSearchPipeline:
             fit_en1,
             fit_en2,
             self.config,
+            window_width=baseline_info["window_width"],
         )
 
         synthetic_tables = []

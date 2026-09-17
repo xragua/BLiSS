@@ -4,10 +4,11 @@ The null is generated in detector space: the empirical baseline measured on
 the rebinned spectrum is interpolated to the native channel grid, converted to
 expected counts (times exposure and channel width, plus the scaled background
 that was subtracted), and source and background counts are drawn from
-independent Poisson distributions. Each realization is then summed into the
-same bins as the data, converted to counts s^-1 keV^-1, and its empirical
+independent Poisson distributions. Each realization is then rebinned using
+the configured rule, converted to counts s^-1 keV^-1, and its empirical
 baseline is recomputed, so the non-linearity of the baseline estimator is
-propagated empirically into the null distribution. This is the detector-space
+propagated empirically into the null distribution. The physical median-window
+widths are inherited from the full observed spectrum. This is the detector-space
 analogue of ``fakeit`` with the empirical baseline as the model.
 
 A Gaussian model (fluctuations N(0, sigma_i) around the baseline on the
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from numbers import Integral
 import numpy as np
 
-from ..line_search.empirical_baseline import base_calculator
+from ..line_search.empirical_baseline import choose_baseline_window, moving_median_x
 from ..spectrum_data.rebinning_tools import rebin_counts, apply_groups
 
 
@@ -73,20 +74,23 @@ def generate_null_realizations(
     config,
     *,
     noise_model=None,
+    window_width=None,
 ):
     """Generate null realizations that reproduce the data-processing chain.
 
     The null is Poisson at channel resolution: source and background counts
-    are drawn independently, summed into the *same* bins as the data
-    (``rebin_counts`` with the configured method), converted to density, and
-    the empirical baseline is recomputed on each realization. With
+    are drawn independently, rebinned, converted to density, and the empirical
+    baseline is recomputed on each realization. Fixed groups are inherited
+    from the data; adaptive S/N grouping is repeated for each realization. With
     ``noise_model="gaussian"`` (validation only) fluctuations are instead drawn
     as N(0, sigma_i) around the baseline on the rebinned grid.
 
-    The region simulated is the fit interval enlarged by one baseline window
-    on each side, so the recomputed baseline has the same edge behaviour as
-    the data baseline; each realization is then restricted to
-    ``[fit_en1, fit_en2]``.
+    Median-window widths are resolved on the full observed grid, including
+    the ``max_range_fraction`` cap, and interpolated onto each simulation grid.
+    The cap is not reapplied to the shorter simulated interval. The region
+    simulated is the fit interval enlarged by the largest effective window
+    on each side, to provide baseline context. Each realization is then
+    restricted to ``[fit_en1, fit_en2]``.
 
     Parameters
     ----------
@@ -103,6 +107,11 @@ def generate_null_realizations(
         count must be a nonnegative integer; zero returns an empty list.
     noise_model : {'poisson', 'gaussian'} or None
         Overrides ``config.noise_model``.
+    window_width : numpy.ndarray or None
+        Effective median-window widths on ``spectrum_full.energy``, already
+        capped on that full grid. The pipeline passes the widths used for the
+        observed baseline. If omitted, they are resolved from ``config`` on
+        the full grid once, before generating any realizations.
 
     Returns
     -------
@@ -123,20 +132,30 @@ def generate_null_realizations(
     if model not in ("poisson", "gaussian"):
         raise ValueError("noise_model must be 'poisson' or 'gaussian'.")
     rng = np.random.default_rng(config.synthetic_seed)
-    w = config.baseline_window
-    if callable(w):
-        w = w(np.asarray(spectrum_full.energy, dtype=float))
-    margin = float(np.max(w))
+    energy_full = np.asarray(spectrum_full.energy, dtype=float)
+    if window_width is None:
+        window_width = choose_baseline_window(
+            energy_full,
+            baseline_window=config.baseline_window,
+            max_range_fraction=config.max_range_fraction,
+        )
+    window_width = np.asarray(window_width, dtype=float)
+    if (window_width.shape != energy_full.shape
+            or not np.all(np.isfinite(window_width) & (window_width > 0))):
+        raise ValueError("window_width must contain one finite, positive width "
+                         "per energy bin in spectrum_full.")
+    margin = float(np.max(window_width))
     base_full = np.asarray(base_full, dtype=float)
 
     def _finish(e, y, sy, resp_src_e, resp_src):
         """Baseline, positive excess, response sigma, and cut to the interval."""
-        base = base_calculator(
+        # Reuse the full-spectrum scale; do not cap it on this shorter grid.
+        widths = np.interp(e, energy_full, window_width)
+        base = moving_median_x(
             e, y,
-            baseline_window=config.baseline_window,
-            max_range_fraction=config.max_range_fraction,
+            width=widths,
             min_points=config.min_points,
-        ) 
+        )
         ylines = np.maximum(y - base, 0.0)
         resp = None
         if resp_src is not None:
