@@ -6,8 +6,7 @@ import pandas as pd
 from scipy.optimize import curve_fit
 from .fit_quality import annotate_fit_quality
 from .peak_selection import find_peaks_new
-from .gaussian_models import (n_gaussian, p0_generator, fit_gaussian_components,
-                              WIDTH_FIT_COLUMNS)
+from .gaussian_models import n_gaussian, p0_generator
 
 DEFAULT_MIN_PEAK_SEPARATION = 0.001
 """Floor of the minimum separation between retained peaks, in spectral-axis
@@ -47,7 +46,7 @@ class CandidateRegionDetector:
     """Small wrapper object for detecting and fitting raw line candidates."""
 
     def detect(self, x, y, sy, ylines, base, response_sigma=None,
-               min_peak_separation=None):
+               min_peak_separation=None, max_sigma_line=0.1):
         """Detect raw candidate lines from baseline-subtracted spectral excesses.
 
         Parameters
@@ -69,6 +68,8 @@ class CandidateRegionDetector:
             Floor of the minimum separation between retained peaks, in
             spectral-axis units. ``None`` uses
             ``DEFAULT_MIN_PEAK_SEPARATION``.
+        max_sigma_line : float, default: 0.1
+            Upper sigma bound for every fitted component, in keV.
 
         Returns
         -------
@@ -80,6 +81,7 @@ class CandidateRegionDetector:
             x, y, sy, ylines, base,
             response_sigma=response_sigma,
             min_peak_separation=min_peak_separation,
+            max_sigma_line=max_sigma_line,
         )
 
 
@@ -148,7 +150,7 @@ def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None):
     return blocks
 
 
-def _fit_candidate_block(block, block_index, min_peak_separation=None):
+def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma_line=0.1):
     """Fit Gaussian components inside one candidate block.
 
     Peak retention follows two rules: (i) minimum separation -- among peaks
@@ -161,11 +163,12 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
     most prominent peaks. Local fits are performed on the signed
     baseline-subtracted residual of the block, weighted by the supplied
     one-sigma observational uncertainties. Their absolute scale is retained
-    in the covariance; the empirical baseline is treated as fixed. A free
-    width below the instrumental sigma is fixed to that value in one joint
-    refit. Such widths have sigma_fixed=True and esigma=NaN; the other errors
-    are conditional on the imposed width. No response means no fixation.
-    The joint refit preserves the number of retained Gaussian components.
+    in the covariance; the empirical baseline is treated as fixed. Amplitude,
+    center and sigma remain free within their bounds in a single joint fit.
+    After fitting, discard each component with ``ecenter > 0.1`` keV,
+    ``esigma > 0.5`` keV, or ``eamplitude > 10 * max(block.values)``.
+    The amplitude-error limit uses the observed block including its continuum.
+    Retained components keep their joint-fit parameters; no refit is performed.
 
     Parameters
     ----------
@@ -177,15 +180,16 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
     min_peak_separation : float or None, default: None
         Floor of the minimum separation between retained peaks, in
         spectral-axis units. ``None`` uses ``DEFAULT_MIN_PEAK_SEPARATION``.
+    max_sigma_line : float, default: 0.1
+        Upper sigma bound for every fitted component, in keV.
 
     Returns
     -------
     list of dict
-        One dictionary per fitted local Gaussian, containing amplitude,
-        center, sigma, formal errors, block-level R-squared, and mean block
+        One dictionary per retained local Gaussian, containing amplitude,
+        center, sigma, formal errors, and mean block
         uncertainty. ``cov_amplitude_sigma`` retains the amplitude/width
-        covariance from this joint fit. ``sigma_lower_bound`` records the width floor;
-        ``sigma_at_lower_bound`` marks widths within 1% of a positive floor.
+        covariance from this joint fit.
     """
     rows = []
     noise_on_block = np.mean(block.uncertainties)
@@ -219,7 +223,8 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
             if len(good_peaks) > 0:
                 p0, bounds = p0_generator(block.energy, block.values,
                                           good_peaks,
-                                          response_sigma=block.response_sigma)
+                                          response_sigma=block.response_sigma,
+                                          max_sigma_line=max_sigma_line)
                 try:
                     target = block.values - block.baseline
                     fit_sigma = np.asarray(block.uncertainties, dtype=float)
@@ -227,20 +232,19 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
                             or not np.all(np.isfinite(fit_sigma) & (fit_sigma > 0))):
                         raise ValueError("Local fit requires finite positive uncertainties "
                                          "for every fitted bin.")
-                    popt, pcov, width_fixed, reference_centers = fit_gaussian_components(
-                        block.energy, target, p0, bounds, fit_sigma,
-                        response_sigma=block.response_sigma, optimizer=curve_fit)
+                    popt, pcov = curve_fit(
+                        n_gaussian, block.energy, target, p0=p0, bounds=bounds,
+                        sigma=fit_sigma, absolute_sigma=True, maxfev=100000)
                     errors = np.sqrt(np.diag(pcov))
-                    errors[2::3][width_fixed] = np.nan
-                    yfit = n_gaussian(block.energy, *popt)
-                    ss_tot = np.sum((target - np.mean(target)) ** 2)
-                    if ss_tot > 0:
-                        rsq = 1 - np.sum((target - yfit) ** 2) / ss_tot
-                    else:
-                        rsq = np.nan
                     popt_ = np.reshape(popt, (-1, 3))
                     errors_ = np.reshape(errors, (-1, 3))
+                    max_amplitude_error = 100.0 * max(block.values)
                     for k in range(len(popt_)):
+                        eamplitude, ecenter, esigma = errors_[k]
+                        # Apply the same post-fit cut to observed and null lines,
+                        # before they can enter scoring, refitting or output.
+                        if (ecenter > 1 or eamplitude > max_amplitude_error):
+                            continue
                         rows.append({'fit_converged': True,
                                      'fit_message': '',
                                      'fit_block_id': block_index,
@@ -248,19 +252,10 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
                                      'amplitude': popt_[k][0],
                                      'center': popt_[k][1],
                                      'sigma': popt_[k][2],
-                                     'sigma_fixed': bool(width_fixed[k]),
-                                     'sigma_reference_center': reference_centers[k],
-                                     'fit_uncertainty': ('conditional_on_fixed_widths'
-                                                         if width_fixed.any() else 'free_widths'),
-                                     'sigma_lower_bound': bounds[0][3*k + 2],
-                                     'sigma_at_lower_bound': bool(
-                                         not width_fixed[k] and bounds[0][3*k + 2] > 0 and
-                                         popt_[k][2] <= 1.01 * bounds[0][3*k + 2]),
-                                     'eamplitude': errors_[k][0],
-                                     'ecenter': errors_[k][1],
-                                     'esigma': errors_[k][2],
+                                     'eamplitude': eamplitude,
+                                     'ecenter': ecenter,
+                                     'esigma': esigma,
                                      'cov_amplitude_sigma': pcov[3*k, 3*k + 2],
-                                     'rsq': rsq,
                                      'noise_on_block': noise_on_block})
                 except (RuntimeError, ValueError) as exc:
                     print(f'Error fitting block {block_index}: {exc}')
@@ -271,11 +266,8 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None):
                             center=p0[3*k + 1], fit_center_initial=p0[3*k + 1],
                             amplitude=np.nan, sigma=np.nan, eamplitude=np.nan,
                             ecenter=np.nan, esigma=np.nan,
-                            cov_amplitude_sigma=np.nan, rsq=np.nan,
+                            cov_amplitude_sigma=np.nan,
                             noise_on_block=noise_on_block,
-                            sigma_lower_bound=bounds[0][3*k + 2],
-                            sigma_at_lower_bound=False, sigma_fixed=False,
-                            sigma_reference_center=np.nan, fit_uncertainty='unavailable',
                             fit_converged=False,
                             fit_message=str(exc), fit_block_id=block_index))
     return rows
@@ -298,12 +290,11 @@ def _add_line_context(fitted, x, y, base):
     Returns
     -------
     pandas.DataFrame
-        Candidate table with ``base_on_line``, ``value_on_line``, and
+        Candidate table with ``base_on_line`` and
         ``relative_power`` columns added.
     """
     if len(fitted) == 0:
         fitted['base_on_line'] = []
-        fitted['value_on_line'] = []
         fitted['relative_power'] = []
         return fitted
     min_diff_positions = []
@@ -313,14 +304,14 @@ def _add_line_context(fitted, x, y, base):
                                   if np.isfinite(center) else None)
     fitted['base_on_line'] = [base[pos] if pos is not None else np.nan
                               for pos in min_diff_positions]
-    fitted['value_on_line'] = [y[pos] if pos is not None else np.nan
-                               for pos in min_diff_positions]
-    fitted['relative_power'] = (fitted.value_on_line - fitted.base_on_line) / (fitted.value_on_line + fitted.base_on_line)
+    values_on_line = np.array([y[pos] if pos is not None else np.nan
+                              for pos in min_diff_positions])
+    fitted['relative_power'] = (values_on_line - fitted.base_on_line) / (values_on_line + fitted.base_on_line)
     return fitted
 
 
 def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
-                     min_peak_separation=None):
+                     min_peak_separation=None, max_sigma_line=0.1):
     """Detect contiguous excesses and fit preliminary Gaussian line candidates.
 
     Parameters
@@ -342,6 +333,8 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         spectral-axis units. ``None`` uses ``DEFAULT_MIN_PEAK_SEPARATION``;
         when ``response_sigma`` is provided, the effective local separation
         is ``max(min_peak_separation, sigma_inst(E))``.
+    max_sigma_line : float, default: 0.1
+        Upper sigma bound for every fitted component, in keV.
 
     Returns
     -------
@@ -349,6 +342,7 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         Raw candidate-line table with Gaussian parameters, parameter errors,
         goodness-of-fit information, local continuum context, and instrumental
         ``response_sigma`` interpolated at each fitted centroid (NaN if absent).
+        Components exceeding the local-fit error limits are already excluded.
         Quality metadata retains failed attempts: their center is the initial
         guess, their fitted amplitude/width/errors are NaN, and the failure
         message is stored. Non-evaluable attempts are not detection claims.
@@ -358,15 +352,14 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
     rows = []
     for block_index, block in enumerate(blocks):
         rows.extend(_fit_candidate_block(
-            block, block_index, min_peak_separation=min_peak_separation))
+            block, block_index, min_peak_separation=min_peak_separation,
+            max_sigma_line=max_sigma_line))
     fitted = pd.DataFrame(rows, columns=['amplitude', 'center', 'sigma',
                                          'eamplitude', 'ecenter', 'esigma',
                                          'cov_amplitude_sigma',
-                                         'rsq', 'noise_on_block',
-                                         'sigma_lower_bound', 'sigma_at_lower_bound',
+                                         'noise_on_block',
                                          'fit_converged', 'fit_message',
-                                         'fit_block_id', 'fit_center_initial',
-                                         *WIDTH_FIT_COLUMNS])
+                                         'fit_block_id', 'fit_center_initial'])
     fitted = _add_line_context(fitted, x, y, base)
     fitted['response_sigma'] = np.nan
     if response_sigma is not None and len(fitted):

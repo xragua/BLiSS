@@ -103,8 +103,7 @@ def _eval_bliss_score_gmm_valid(lines, simlines, simx, x, k_min=1, k_max=20, cov
         The feature space uses peak S/N, Gaussian area, relative power, and
         ``sigma / response_sigma`` when instrumental sigmas are finite and
         positive for every observed and synthetic candidate. Otherwise the
-        width feature is omitted for the entire comparison. Area-error diagnostics
-        use ``cov_amplitude_sigma``; if missing, those diagnostics remain NaN.
+        width feature is omitted for the entire comparison.
         Area errors and area S/N are not GMM features. The public wrapper
         applies its optional area S/N preselection before calling this function.
     simlines : pandas.DataFrame
@@ -170,18 +169,6 @@ def _eval_bliss_score_gmm_valid(lines, simlines, simx, x, k_min=1, k_max=20, cov
         lines_sim_real['sigma'] *
         k
     )
-    lines_sim_real['earea'] = gaussian_area_error(
-        lines_sim_real['amplitude'], lines_sim_real['sigma'],
-        lines_sim_real['eamplitude'], lines_sim_real['esigma'],
-        lines_sim_real.get('cov_amplitude_sigma', np.nan),
-        sigma_fixed=lines_sim_real.get('sigma_fixed', False),
-    )
-    lines_sim_real['area_snr'] = np.where(
-        lines_sim_real['earea'] > 0,
-        lines_sim_real['area'] / lines_sim_real['earea'], np.nan,
-    )
-    # Area uncertainty is diagnostic, not a GMM feature. Keep unavailable
-    # errors/S/N as NaN instead of converting them to artificial exact zeros.
     for col in ['peak_snr', 'area'] + (
         ['width_ratio'] if 'width_ratio' in feature_columns else []
     ):
@@ -236,18 +223,13 @@ def _eval_bliss_score_gmm_valid(lines, simlines, simx, x, k_min=1, k_max=20, cov
     lines_sim_real["gmm_label"] = cluster_labels
     lines_sim_real = lines_sim_real.reset_index(drop=True)
     cluster_ids = np.unique(cluster_labels)
-    cluster_contains_sim, cluster_contains_real = [], []
+    cluster_contains_sim = []
     simnumber = len(simlines)
-    realnumber = len(lines)
     for i in cluster_ids:
         sim_group = lines_sim_real[
             (lines_sim_real.gmm_label == i) & (lines_sim_real.real == 0)
         ]
-        real_group = lines_sim_real[
-            (lines_sim_real.gmm_label == i) & (lines_sim_real.real == 1)
-        ]
         cluster_contains_sim.append(len(sim_group) / simnumber if simnumber > 0 else 0.0)
-        cluster_contains_real.append(len(real_group) / realnumber if realnumber > 0 else 0.0)
     idx_desc_loop = cluster_ids[np.argsort(cluster_contains_sim)[::-1]]
     filtered_lines_sim_real = lines_sim_real
     real_group = filtered_lines_sim_real[filtered_lines_sim_real.real == 1]
@@ -256,8 +238,6 @@ def _eval_bliss_score_gmm_valid(lines, simlines, simx, x, k_min=1, k_max=20, cov
     sim_rate = len(sim_group) / ((max(simx) - min(simx)) * n_sim)
     bliss_score = np.round(calculate_bliss_score(real_rate, sim_rate), 2)
     lines_sim_real['bliss_score'] = bliss_score
-    lines_real = lines_sim_real[lines_sim_real.real == 1]
-    lines_real = lines_real.dropna(axis=1, how='all')
     for j in idx_desc_loop:
         filtered_lines_sim_real = filtered_lines_sim_real[filtered_lines_sim_real.gmm_label != j].reset_index(drop=True)
         real_group = filtered_lines_sim_real[(filtered_lines_sim_real.gmm_label != j) & (filtered_lines_sim_real.real == 1)]
@@ -300,7 +280,6 @@ def eval_bliss_score_gmm(lines, simlines, simx, x, k_min=1, k_max=20,
                  else pd.Series(np.nan, index=table.index))
             bad = ~np.isfinite(v) | ((v <= 0) if col == 'noise_on_block' else False)
             table.loc[bad, 'fit_evaluable'] = False
-            table.loc[bad, 'fit_status'] = 'not_evaluable'
             table.loc[bad, 'fit_reasons'] = table.loc[bad, 'fit_reasons'].map(
                 lambda reason: ';'.join(filter(None, [reason, 'invalid_' + col])))
         table['bliss_score_status'] = np.where(table['fit_evaluable'], 'eligible', 'invalid_fit')
@@ -311,12 +290,9 @@ def eval_bliss_score_gmm(lines, simlines, simx, x, k_min=1, k_max=20,
                 'amplitude', 'sigma', 'eamplitude', 'esigma', 'cov_amplitude_sigma',
             ]).apply(pd.to_numeric, errors='coerce')
             area = (np.sqrt(2 * np.pi) * params.amplitude * params.sigma).to_numpy()
-            error = gaussian_area_error(
-                *[params[col] for col in params.columns],
-                sigma_fixed=table.get('sigma_fixed', False))
+            error = gaussian_area_error(*[params[col] for col in params.columns])
             usable = np.isfinite(area) & np.isfinite(error) & (error > 0)
             snr = np.divide(area, error, out=np.full(len(table), np.nan), where=usable)
-            table['area'], table['earea'], table['area_snr'] = area, error, snr
             eligible_fit = table['fit_evaluable'].to_numpy()
             table.loc[eligible_fit & ~usable, 'bliss_score_status'] = 'invalid_area_error'
             table.loc[eligible_fit & usable & (snr <= min_area_snr),

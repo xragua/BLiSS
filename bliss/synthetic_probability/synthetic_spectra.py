@@ -15,6 +15,7 @@ rebinned grid) is retained only for validation and comparison.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from numbers import Integral
 import numpy as np
 
 from ..line_search.empirical_baseline import base_calculator
@@ -98,7 +99,8 @@ def generate_null_realizations(
         Padded search interval.
     config : BlindLineSearchConfig
         Supplies ``num_synthetic_simulations``, ``synthetic_seed``,
-        ``noise_model``, rebinning and baseline parameters.
+        ``noise_model``, rebinning and baseline parameters. The simulation
+        count must be a nonnegative integer; zero returns an empty list.
     noise_model : {'poisson', 'gaussian'} or None
         Overrides ``config.noise_model``.
 
@@ -108,6 +110,11 @@ def generate_null_realizations(
         One entry per realization. Grids may differ between entries when the
         rebinning is adaptive (``'snr'``).
     """
+    n_sim = config.num_synthetic_simulations
+    if isinstance(n_sim, (bool, np.bool_)) or not isinstance(n_sim, Integral) or n_sim < 0:
+        raise ValueError('num_synthetic_simulations must be a nonnegative integer.')
+    if n_sim == 0:
+        return []
     native = getattr(spectrum_full, "native", None)
     if native is None:
         raise ValueError("spectrum_full has no native count information; "
@@ -120,7 +127,6 @@ def generate_null_realizations(
     if callable(w):
         w = w(np.asarray(spectrum_full.energy, dtype=float))
     margin = float(np.max(w))
-    n_sim = int(config.num_synthetic_simulations)
     base_full = np.asarray(base_full, dtype=float)
 
     def _finish(e, y, sy, resp_src_e, resp_src):

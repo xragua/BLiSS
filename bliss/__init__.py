@@ -19,7 +19,6 @@ from .line_search.blind_line_search import (
     fit_global,
     final_fit_and_metrics,
     plot_global_fit,
-    add_look_elsewhere_p
 )
 
 from .synthetic_probability.synthetic_spectra import (
@@ -84,7 +83,6 @@ __all__ = [
     #"write_isis_files_from_bliss_results",
     #"clean_zero_area_egauss_model",
     #"run_bliss_for_isis",
-    "add_look_elsewhere_p"
 ]
 
 from .score_columns import normalize_score_columns, read_bliss_csv
