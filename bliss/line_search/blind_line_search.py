@@ -813,6 +813,8 @@ def plot_global_fit(
 ) -> None:
     """Plot the spectrum, empirical baseline, and global line model.
 
+    Y-axis limits are autoscaled from the displayed energy interval only.
+
     Parameters
     ----------
     spectrum : PreparedSpectrum
@@ -838,19 +840,32 @@ def plot_global_fit(
     else:
         size_fig = size_fig_input
 
+    # Restrict every plotted array so y autoscaling uses only the visible
+    # energy interval, including the data uncertainties and all model curves.
+    energy = np.asarray(spectrum.energy)
+    visible = np.isfinite(energy)
+    if energy_min is not None:
+        visible &= energy >= energy_min
+    if energy_max is not None:
+        visible &= energy <= energy_max
+
+    plot_energy = energy[visible]
+    plot_base = np.asarray(base)[visible]
+    plot_yfit = np.asarray(yfit)[visible]
+
     plt.figure(figsize=size_fig)
 
     plt.errorbar(
-        spectrum.energy,
-        spectrum.values,
-        yerr=spectrum.uncertainties,
+        plot_energy,
+        np.asarray(spectrum.values)[visible],
+        yerr=np.asarray(spectrum.uncertainties)[visible],
         label="Data",
         alpha=0.2,
     )
 
-    plt.plot(spectrum.energy, base, "k:", label="base")
-    plt.plot(spectrum.energy, yfit, "g:", label="Lines")
-    plt.plot(spectrum.energy, yfit + base, "r", label="Line+base")
+    plt.plot(plot_energy, plot_base, "k:", label="base")
+    plt.plot(plot_energy, plot_yfit, "g:", label="Lines")
+    plt.plot(plot_energy, plot_yfit + plot_base, "r", label="Line+base")
 
     if energy_min is not None or energy_max is not None:
         plt.xlim(energy_min, energy_max)
