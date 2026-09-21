@@ -169,6 +169,7 @@ def _read_rmf_resolution(path: str | Path):
     fits = _import_astropy_fits()
     rmf_channel, e_min, e_max = _read_ebounds_from_rmf(path)
     channel_energy = (e_min + e_max) / 2.0
+    channel_order = np.argsort(channel_energy)
     channel_lookup = {int(ch): i for i, ch in enumerate(rmf_channel)}
 
     with fits.open(path) as hdul:
@@ -192,7 +193,7 @@ def _read_rmf_resolution(path: str | Path):
                 n_chan = np.atleast_1d(row['N_CHAN'])[:n_grp]
                 matrix = np.asarray(row['MATRIX'], dtype=float).ravel()
 
-                energies = []
+                channel_indices = []
                 weights = []
                 offset = 0
                 for first, count in zip(f_chan, n_chan):
@@ -202,19 +203,19 @@ def _read_rmf_resolution(path: str | Path):
                     for channel, weight in zip(range(int(first), int(first) + count), group_weights):
                         idx = channel_lookup.get(int(channel))
                         if idx is not None and np.isfinite(weight) and weight > 0:
-                            energies.append(channel_energy[idx])
+                            channel_indices.append(idx)
                             weights.append(weight)
 
                 if weights:
                     # Restore zero-probability channels so gaps cannot broaden
                     # the interpolated half-height crossings.
                     profile = np.zeros(len(channel_energy), dtype=float)
-                    indices = np.searchsorted(channel_energy, energies)
-                    np.add.at(profile, indices, weights)
+                    np.add.at(profile, channel_indices, weights)
                     response_sigma[row_index] = _response_core_sigma(
-                        channel_energy, profile)
+                        channel_energy[channel_order], profile[channel_order])
 
-            return incident_energy, response_sigma
+            incident_order = np.argsort(incident_energy)
+            return incident_energy[incident_order], response_sigma[incident_order]
 
     raise ValueError(f'Could not derive instrumental resolution from RMF file: {path}')
 
