@@ -30,9 +30,10 @@ Originally developed for X-ray spectroscopy, BLiSS is designed around a general 
 
 - **Flexible rebinning**
   - Rebin spectra by instrumental resolution or target signal-to-noise ratio.
-
-- **ISIS integration**
-  - Automatically generates Gaussian components for ISIS spectral fitting.
+  
+- **Null-spectrum evaluation**
+  - Reports five global Monte Carlo p-values based on synthetic null spectra.
+  - Provides an additional empirical BLiSS score derived using Gaussian mixture modelling.
 
 - **Reproducible analyses**
   - Applies identical search criteria across large spectral samples.
@@ -104,9 +105,17 @@ These dependencies are installed automatically with BLiSS.
 
 If you use BLiSS in your research, please cite:
 
-> Abalo, L., Sanjurjo-Ferrín, G., et al. (2026), *BLiSS: Blind Line Search System*, Astronomy & Computing.
+> @misc{abalo2026blindlinesearchsystem,
+      title={Blind Line Search System: BLiSS}, 
+      author={Luis Abalo and Graciela Sanjurjo-Ferrín and Jessica Planelles-Villalva and José Joaquín Rodes-Roca and José Miguel Torrejón},
+      year={2026},
+      eprint={2607.07783},
+      archivePrefix={arXiv},
+      primaryClass={astro-ph.IM},
+      url={https://arxiv.org/abs/2607.07783}, 
+}
 
-(The citation will be updated once the paper is published.)
+
 
 ---
 
@@ -116,26 +125,10 @@ Bug reports, feature requests and suggestions are welcome through GitHub Issues:
 
 https://github.com/xragua/bliss/issues
 
-For scientific questions, you can also contact:
-
-luisabalo.com 
 
 ---
 
 # License
 
 This project is distributed under the **MIT License**.
-## bliss_score
 
-`bliss_score` is an empirical score in [0, 1] based on the excess of candidate
-rates over synthetic null spectra. It is not a calibrated posterior probability
-or a detection p-value. Its definition and numerical calculation are unchanged
-by this naming update. New candidate tables use `bliss_score` and
-`bliss_score_status`; plots and notebook thresholds use the same terminology.
-
-Use `from bliss import read_bliss_csv` to read historical candidate CSVs with
-the new column names without modifying the original experiment files. The
-public scoring API is `calculate_bliss_score`, `eval_bliss_score_gmm`,
-`GMMBlissScoreEvaluator`, and `plot_bliss_score`. Restart notebook kernels after
-updating the package. Historical figures and experiment manifests retain the
-labels and code hashes of the run that produced them.
