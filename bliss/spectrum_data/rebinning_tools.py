@@ -1,233 +1,167 @@
-"""Rebin one-dimensional spectra by bin count, S/N criterion, or resolution."""
+"""Count-conserving rebinning of detector spectra."""
 import numpy as np
 
-def _estimate_bin_width_from_centers(x):
-    """Estimate bin widths from bin centers."""
 
-    x = np.asarray(x, dtype=float)
+# ---------------------------------------------------------------------------
+# Count-conserving rebinning (for spectra in counts, i.e. loader output)
+# ---------------------------------------------------------------------------
 
-    if len(x) == 0:
-        return np.array([])
+def rebin_counts(energy, counts, uncertainties, bin_width, method='none',
+                 scale=None, min_bins=1, remainder='merge'):
+    """Rebin a count spectrum by summing consecutive bins.
 
-    if len(x) == 1:
-        return np.ones_like(x)
-
-    edges = np.empty(len(x) + 1, dtype=float)
-    edges[1:-1] = 0.5 * (x[:-1] + x[1:])
-    edges[0] = x[0] - 0.5 * (x[1] - x[0])
-    edges[-1] = x[-1] + 0.5 * (x[-1] - x[-2])
-
-    return np.diff(edges)
-
-def _clean_arrays(x, y, sy, *extra_arrays):
-    """Convert spectrum arrays to numpy arrays and remove invalid bins.
+    Counts are **summed** (uncertainties in quadrature, widths added), so
+    Poisson statistics are preserved and the result can be converted to a
+    density afterwards.
 
     Parameters
     ----------
-    x : array-like
-        Spectral coordinate values.
-    y : array-like
-        Spectral counts, rates, or flux values.
-    sy : array-like
-        One-sigma uncertainties on ``y``.
+    energy, counts, uncertainties, bin_width : array-like
+        Bin centres, counts (net counts are allowed), one-sigma uncertainties
+        and bin widths. Must be sorted by energy.
+    method : {'none', 'bins', 'snr', 'resolution'}
+        * ``'none'``: return the input unchanged.
+        * ``'bins'``: group ``scale`` consecutive bins.
+        * ``'snr'``: accumulate bins until ``counts / sigma >= scale``.
+        * ``'resolution'``: group bins into fixed-width intervals of ``scale``
+          energy units; each input bin is assigned to the interval containing
+          its centre, so bins are never split.
+    scale : int or float
+        Number of bins, S/N threshold, or interval width, depending on ``method``.
+    min_bins : int, default 1
+        Minimum number of input bins per output bin (``'snr'`` only).
+    remainder : {'merge', 'drop'}, default 'merge'
+        What to do with trailing bins that do not complete a group
+        (``'bins'`` and ``'snr'``): merge them into the last output bin or
+        drop them.
 
     Returns
     -------
-    tuple of numpy.ndarray
-        Filtered ``x``, ``y``, and ``sy`` arrays containing only finite values with
-        strictly positive uncertainties.
+    energy_new, counts_new, uncertainties_new, bin_width_new : numpy.ndarray
+        Output bin centres (midpoint of the grouped edges), summed counts,
+        uncertainties added in quadrature, and total widths.
+    group : numpy.ndarray of int
+        Index of the output bin each input bin was assigned to (-1 if dropped).
     """
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    sy = np.asarray(sy, dtype=float)
-    extras = [np.asarray(arr, dtype=float) for arr in extra_arrays]
-    valid_mask = (
-        np.isfinite(x)
-        & np.isfinite(y)
-        & np.isfinite(sy)
-        & (sy > 0))
-    for arr in extras:
-        valid_mask &= np.isfinite(arr)
-    cleaned = [x[valid_mask], y[valid_mask], sy[valid_mask]]
-    for arr in extras:
-        cleaned.append(arr[valid_mask])
-    return tuple(cleaned)
+    energy = np.asarray(energy, dtype=float)
+    counts = np.asarray(counts, dtype=float)
+    uncertainties = np.asarray(uncertainties, dtype=float)
+    bin_width = np.asarray(bin_width, dtype=float)
+    n = len(energy)
+    if not (len(counts) == len(uncertainties) == len(bin_width) == n):
+        raise ValueError('energy, counts, uncertainties and bin_width must have the same length.')
+    if n == 0:
+        empty = np.array([], dtype=float)
+        return empty, empty, empty, empty, np.array([], dtype=int)
+    if np.any(np.diff(energy) < 0):
+        raise ValueError('energy must be sorted in increasing order.')
+    if remainder not in ('merge', 'drop'):
+        raise ValueError("remainder must be 'merge' or 'drop'.")
 
-def rebin_bins(x, y, sy, nbin):
-    """Rebin a spectrum by grouping a fixed number of consecutive bins.
+    method = str(method).lower()
+    if method == 'none':
+        return energy.copy(), counts.copy(), uncertainties.copy(), bin_width.copy(), np.arange(n)
 
-    Parameters
-    ----------
-    x : array-like
-        Spectral coordinate values.
-    y : array-like
-        Spectral values to average within each group.
-    sy : array-like
-        One-sigma uncertainties used as inverse-variance weights.
-    nbin : int
-        Number of consecutive input bins combined into each output bin.
+    if scale is None:
+        raise ValueError(f"method='{method}' requires a scale.")
 
-    Returns
-    -------
-    tuple of list
-        Weighted coordinate centers, weighted spectral values, and propagated
-        uncertainties for each rebinned group.
-    """
-    x, y, sy = _clean_arrays(x, y, sy)
-    x_new, y_new, sy_new = [], [], []
-    for start in range(0, len(y), nbin):
-        stop = start + nbin
-        x_bin = x[start:stop]
-        y_bin = y[start:stop]
-        sy_bin = sy[start:stop]
-        if len(y_bin) == 0:
-            continue
-        w = 1.0 / sy_bin**2
-        if np.sum(w) <= 0:
-            continue
-        x_new.append(np.sum(x_bin * w) / np.sum(w))
-        y_new.append(np.sum(y_bin * w) / np.sum(w))
-        sy_new.append(np.sqrt(1.0 / np.sum(w)))
+    # ---- build the group index for every input bin -------------------------
+    group = np.full(n, -1, dtype=int)
 
-    return np.array(x_new), np.array(y_new), np.array(sy_new)
+    if method == 'bins':
+        nb = int(scale)
+        if nb < 1:
+            raise ValueError('scale must be >= 1 for method="bins".')
+        group[:] = np.arange(n) // nb
+        n_full = (n // nb) * nb
+        if n_full < n:                       # incomplete trailing group
+            if remainder == 'merge' and n_full > 0:
+                group[n_full:] = group[n_full - 1]
+            elif remainder == 'drop':
+                group[n_full:] = -1
 
-def rebin_snr(x, y, sy, min_snr=5,min_bins=1):
-    """Accumulate adjacent bins until a target uncertainty-to-signal criterion is met.
+    elif method == 'snr':
+        threshold = float(scale)
+        if threshold <= 0:
+            raise ValueError('scale must be positive for method="snr".')
+        g = 0
+        acc_counts = 0.0
+        acc_var = 0.0
+        n_acc = 0
+        start = 0
+        for i in range(n):
+            acc_counts += counts[i]
+            acc_var += uncertainties[i] ** 2
+            n_acc += 1
+            snr = acc_counts / np.sqrt(acc_var) if acc_var > 0 else 0.0
+            if snr >= threshold and n_acc >= min_bins:
+                group[start:i + 1] = g
+                g += 1
+                acc_counts = acc_var = 0.0
+                n_acc = 0
+                start = i + 1
+        if start < n:                        # trailing bins below threshold
+            if remainder == 'merge' and g > 0:
+                group[start:] = g - 1
+            elif remainder == 'merge':       # nothing reached threshold: one bin
+                group[start:] = 0
+            else:
+                group[start:] = -1
 
-    Parameters
-    ----------
-    x : array-like
-        Spectral coordinate values.
-    y : array-like
-        Spectral values to combine.
-    sy : array-like
-        One-sigma uncertainties used for inverse-variance weighting.
-    snr_threshold : float
-        Threshold applied to the current combined uncertainty divided by the
-        weighted signal. A bin is emitted once this value is less than or equal to
-        the threshold.
+    elif method == 'resolution':
+        width = float(scale)
+        if not np.isfinite(width) or width <= 0:
+            raise ValueError('scale must be a positive finite width for method="resolution".')
+        x0 = energy[0] - 0.5 * bin_width[0]
+        raw = np.floor((energy - x0) / width).astype(int)
+        # renumber consecutively (skip empty intervals)
+        _, group[:] = np.unique(raw, return_inverse=True)
 
-    Returns
-    -------
-    tuple of list
-        Weighted coordinates, weighted values, and propagated uncertainties for the
-        adaptive bins.
-    """
-    x, y, sy = _clean_arrays(x, y, sy)
-    w, y_bin, x_bin, sy_bin = ([], [], [], [])
-    y_new, x_new, sy_new = ([], [], [])
-    for xi, yi, syi in zip(x, y, sy):
-        x_bin.append(xi)
-        y_bin.append(yi)
-        sy_bin.append(syi)
-        x_arr = np.array(x_bin)
-        y_arr = np.array(y_bin)
-        sy_arr = np.array(sy_bin)
-        w = 1.0 / sy_arr**2
-        y_weighted = np.sum(y_arr * w) / np.sum(w)
-        x_weighted = np.sum(x_arr * w) / np.sum(w)
-        sy_weighted = np.sqrt(1.0 / np.sum(w))
-        snr_now = np.abs(y_weighted) / sy_weighted
-        if (snr_now >= min_snr) and (len(y_bin) >= min_bins):
-            x_new.append(x_weighted)
-            y_new.append(y_weighted)
-            sy_new.append(sy_weighted)
-            x_bin, y_bin, sy_bin = [], [], []
-    return np.array(x_new), np.array(y_new), np.array(sy_new)
-
-def rebin_resolution(x, y, sy, resolution, bin_width=None):
-    """
-    Rebin a spectrum in density units onto fixed-width coordinate intervals.
-
-    Use this for spectra in units such as:
-
-        photons cm^-2 s^-1 keV^-1
-        counts s^-1 keV^-1
-
-    The integrated quantity over energy is preserved.
-
-    Returns
-    -------
-    x_new, y_new, sy_new, bin_width_new : numpy.ndarray
-        Rebinned coordinate, density values, uncertainties, and bin widths.
-    """
-
-    if bin_width is None:
-        x, y, sy = _clean_arrays(x, y, sy)
     else:
-        x, y, sy, bin_width = _clean_arrays(x, y, sy, bin_width)
+        raise ValueError("method must be 'none', 'bins', 'snr', or 'resolution'.")
 
-    if len(x) == 0:
-        return np.array([]), np.array([]), np.array([]), np.array([])
+    return apply_groups(energy, counts, uncertainties, bin_width, group) + (group,)
 
-    order = np.argsort(x)
-    x = x[order]
-    y = y[order]
-    sy = sy[order]
 
-    if bin_width is None:
-        bin_width = _estimate_bin_width_from_centers(x)
-    else:
-        bin_width = bin_width[order]
+def apply_groups(energy, counts, uncertainties, bin_width, group):
+    """Sum native bins according to a precomputed group index.
 
-    valid_width = np.isfinite(bin_width) & (bin_width > 0)
+    This is the second half of ``rebin_counts``; it is exposed so that a
+    grouping derived from the data can be applied unchanged to synthetic
+    realizations.
 
-    x = x[valid_width]
-    y = y[valid_width]
-    sy = sy[valid_width]
-    bin_width = bin_width[valid_width]
+    Parameters
+    ----------
+    energy, counts, uncertainties, bin_width : array-like
+        Native bins (sorted by energy).
+    group : array-like of int
+        Output-bin index of each input bin; ``-1`` means dropped.
 
-    if len(x) == 0:
-        return np.array([]), np.array([]), np.array([]), np.array([])
+    Returns
+    -------
+    energy_new, counts_new, uncertainties_new, bin_width_new : numpy.ndarray
+    """
+    energy = np.asarray(energy, dtype=float)
+    counts = np.asarray(counts, dtype=float)
+    uncertainties = np.asarray(uncertainties, dtype=float)
+    bin_width = np.asarray(bin_width, dtype=float)
+    group = np.asarray(group, dtype=int)
 
-    resolution = float(resolution)
+    keep = group >= 0
+    ids = np.unique(group[keep])
+    e_lo = energy - 0.5 * bin_width
+    e_hi = energy + 0.5 * bin_width
 
-    if not np.isfinite(resolution) or resolution <= 0:
-        raise ValueError("resolution must be a positive finite number.")
+    energy_new = np.empty(len(ids))
+    counts_new = np.empty(len(ids))
+    unc_new = np.empty(len(ids))
+    width_new = np.empty(len(ids))
+    for j, gid in enumerate(ids):
+        m = group == gid
+        lo, hi = e_lo[m].min(), e_hi[m].max()
+        energy_new[j] = 0.5 * (lo + hi)
+        width_new[j] = bin_width[m].sum()
+        counts_new[j] = counts[m].sum()
+        unc_new[j] = np.sqrt(np.sum(uncertainties[m] ** 2))
 
-    input_left = x - 0.5 * bin_width
-    input_right = x + 0.5 * bin_width
-
-    x_start = np.nanmin(input_left)
-    x_end = np.nanmax(input_right)
-
-    edges = np.arange(x_start, x_end + resolution, resolution)
-
-    if edges[-1] < x_end:
-        edges = np.append(edges, x_end)
-
-    x_new = []
-    y_new = []
-    sy_new = []
-    bin_width_new = []
-
-    for left, right in zip(edges[:-1], edges[1:]):
-
-        overlap = np.minimum(input_right, right) - np.maximum(input_left, left)
-        overlap = np.maximum(overlap, 0.0)
-
-        mask = overlap > 0
-
-        if not np.any(mask):
-            continue
-
-        dE = overlap[mask]
-        total_width = np.sum(dE)
-
-        if total_width <= 0:
-            continue
-
-        integrated_y = np.sum(y[mask] * dE)
-        integrated_sy = np.sqrt(np.sum((sy[mask] * dE) ** 2))
-
-        y_out = integrated_y / total_width
-        sy_out = integrated_sy / total_width
-
-        x_out = np.sum(x[mask] * dE) / total_width
-
-        x_new.append(x_out)
-        y_new.append(y_out)
-        sy_new.append(sy_out)
-        bin_width_new.append(total_width)
-
-    return np.asarray(x_new),np.asarray(y_new),np.asarray(sy_new)
+    return energy_new, counts_new, unc_new, width_new

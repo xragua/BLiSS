@@ -1,4 +1,4 @@
-"""Read PHA/RMF-style FITS spectra into BLiSS spectrum objects."""
+"""Read PHA/RMF/ARF-style FITS spectra into BLiSS spectrum objects."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
@@ -115,6 +115,141 @@ def _read_ebounds_from_rmf(path: str | Path):
                 return (channel, e_min, e_max)
     raise ValueError(f'Could not find EBOUNDS extension in RMF file: {path}')
 
+def _response_core_sigma(energy, weights):
+    """Gaussian-equivalent core width from interpolated half-height crossings.
+
+    Requires both crossings and at least two samples in the half-height core.
+    The input must include zero-weight channels, including gaps in the RMF.
+    Invalid or undersampled cores return NaN rather than a tail-based width.
+    """
+    energy = np.asarray(energy, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if len(energy) < 3 or len(weights) != len(energy):
+        return np.nan
+    peak = int(np.argmax(weights))
+    if not np.isfinite(weights[peak]) or weights[peak] <= 0:
+        return np.nan
+    half = weights[peak] / 2.0
+    lo = hi = peak
+    while lo > 0 and weights[lo - 1] >= half:
+        lo -= 1
+    while hi < len(weights) - 1 and weights[hi + 1] >= half:
+        hi += 1
+    if lo == 0 or hi == len(weights) - 1 or hi == lo:
+        return np.nan
+    left = np.interp(half, [weights[lo - 1], weights[lo]],
+                     [energy[lo - 1], energy[lo]])
+    right = np.interp(half, [weights[hi + 1], weights[hi]],
+                      [energy[hi + 1], energy[hi]])
+    width = right - left
+    return width / np.sqrt(8.0 * np.log(2.0)) if width > 0 else np.nan
+
+
+def _read_rmf_resolution(path: str | Path):
+    """Estimate the detector line-spread width as a function of energy from an RMF.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        RMF file containing a redistribution MATRIX extension and EBOUNDS table.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        Incident-energy bin centers and Gaussian-equivalent instrumental sigma.
+        The sigma is the FWHM of the principal response core divided by
+        sqrt(8 ln 2), excluding the contribution of distant response tails.
+        Rows without a resolved core are retained as NaN.
+
+    Raises
+    ------
+    ValueError
+        If the RMF does not contain the required redistribution information.
+    """
+    fits = _import_astropy_fits()
+    rmf_channel, e_min, e_max = _read_ebounds_from_rmf(path)
+    channel_energy = (e_min + e_max) / 2.0
+    channel_order = np.argsort(channel_energy)
+    channel_lookup = {int(ch): i for i, ch in enumerate(rmf_channel)}
+
+    with fits.open(path) as hdul:
+        for hdu in hdul:
+            if getattr(hdu, 'data', None) is None or not hasattr(hdu, 'columns'):
+                continue
+            names = set(hdu.columns.names or [])
+            required = {'ENERG_LO', 'ENERG_HI', 'N_GRP', 'F_CHAN', 'N_CHAN', 'MATRIX'}
+            if not required.issubset(names):
+                continue
+
+            incident_energy = (
+                np.asarray(hdu.data['ENERG_LO'], dtype=float)
+                + np.asarray(hdu.data['ENERG_HI'], dtype=float)
+            ) / 2.0
+            response_sigma = np.full(len(incident_energy), np.nan, dtype=float)
+
+            for row_index, row in enumerate(hdu.data):
+                n_grp = int(row['N_GRP'])
+                f_chan = np.atleast_1d(row['F_CHAN'])[:n_grp]
+                n_chan = np.atleast_1d(row['N_CHAN'])[:n_grp]
+                matrix = np.asarray(row['MATRIX'], dtype=float).ravel()
+
+                channel_indices = []
+                weights = []
+                offset = 0
+                for first, count in zip(f_chan, n_chan):
+                    count = int(count)
+                    group_weights = matrix[offset:offset + count]
+                    offset += count
+                    for channel, weight in zip(range(int(first), int(first) + count), group_weights):
+                        idx = channel_lookup.get(int(channel))
+                        if idx is not None and np.isfinite(weight) and weight > 0:
+                            channel_indices.append(idx)
+                            weights.append(weight)
+
+                if weights:
+                    # Restore zero-probability channels so gaps cannot broaden
+                    # the interpolated half-height crossings.
+                    profile = np.zeros(len(channel_energy), dtype=float)
+                    np.add.at(profile, channel_indices, weights)
+                    response_sigma[row_index] = _response_core_sigma(
+                        channel_energy[channel_order], profile[channel_order])
+
+            incident_order = np.argsort(incident_energy)
+            return incident_energy[incident_order], response_sigma[incident_order]
+
+    raise ValueError(f'Could not derive instrumental resolution from RMF file: {path}')
+
+def _read_arf(path: str | Path):
+    """Read energy bins and effective area from an ARF response file.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        ARF file containing ``ENERG_LO``, ``ENERG_HI``, and ``SPECRESP`` columns.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        Energy-bin centers and effective area.
+
+    Raises
+    ------
+    ValueError
+        If the ARF file does not contain a SPECRESP-style table.
+    """
+    fits = _import_astropy_fits()
+    with fits.open(path) as hdul:
+        for hdu in hdul:
+            if getattr(hdu, 'data', None) is None or not hasattr(hdu, 'columns'):
+                continue
+            names = set(hdu.columns.names or [])
+            if {'ENERG_LO', 'ENERG_HI', 'SPECRESP'}.issubset(names):
+                e_lo = np.asarray(hdu.data['ENERG_LO'], dtype=float)
+                e_hi = np.asarray(hdu.data['ENERG_HI'], dtype=float)
+                effective_area = np.asarray(hdu.data['SPECRESP'], dtype=float)
+                return (e_lo + e_hi) / 2.0, effective_area
+    raise ValueError(f'Could not find SPECRESP extension in ARF file: {path}')
+
 def _header_float(header, key: str, default: float):
     """Read a numeric FITS header keyword with a fallback value.
 
@@ -203,19 +338,24 @@ def _extract_spectrum_arrays(hdu):
         channel = np.arange(len(values), dtype=float)
     return (channel, values, uncertainties)
 
-def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Path]=None, rmf_path: Optional[str | Path]=None, *, subtract_background: bool=True, as_arrays: bool=False) -> Spectrum | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Load a FITS PHA spectrum, optionally subtracting background and applying RMF energies.
+def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Path]=None, rmf_path: Optional[str | Path]=None, arf_path: Optional[str | Path]=None, *, subtract_background: bool=True, as_arrays: bool=False) -> Spectrum | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load a folded FITS PHA spectrum with optional RMF and ARF information.
 
     Parameters
     ----------
     pha_path : str or pathlib.Path
-        Source PHA/FITS spectrum file.
+        Source PHA/FITS spectrum file. Observed detector-space counts or rates are
+        retained directly; the spectrum is not unfolded.
     background_path : str, pathlib.Path, or None, default: None
-        Optional background spectrum. It is scaled by BACKSCAL and EXPOSURE before
-        subtraction.
+        Optional background spectrum. It is converted to the source column's
+        units using BACKSCAL and EXPOSURE before subtraction.
     rmf_path : str, pathlib.Path, or None, default: None
         Optional RMF file used to convert channel numbers into energy-bin centers
-        and widths from the EBOUNDS table.
+        and widths from EBOUNDS and to estimate the instrumental line-spread width
+        from the redistribution matrix.
+    arf_path : str, pathlib.Path, or None, default: None
+        Optional ARF file. Its energy grid and effective area are retained in the
+        returned ``Spectrum`` object for response-aware downstream analysis.
     subtract_background : bool, default: True
         If true and ``background_path`` is supplied, subtract the scaled background
         and propagate uncertainties in quadrature.
@@ -225,24 +365,38 @@ def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Pat
     Returns
     -------
     Spectrum or tuple of numpy.ndarray
-        Cleaned spectrum sorted by energy. When ``as_arrays`` is true, returns
-        ``(energy, values, uncertainties, bin_width)``.
+        Cleaned folded spectrum sorted by energy. When ``as_arrays`` is true,
+        returns ``(energy, values, uncertainties, bin_width)``.
     """
     fits = _import_astropy_fits()
     with fits.open(pha_path) as hdul:
         source_hdu = _find_spectrum_hdu(hdul)
         source_header = source_hdu.header
         channel, values, uncertainties = _extract_spectrum_arrays(source_hdu)
+        source_column = _find_existing_column(source_hdu, POSSIBLE_SPECTRUM_COLUMNS)
     if background_path is not None and subtract_background:
         with fits.open(background_path) as hdul:
             background_hdu = _find_spectrum_hdu(hdul)
             background_header = background_hdu.header
             bkg_channel, bkg_values, bkg_uncertainties = _extract_spectrum_arrays(background_hdu)
+            background_column = _find_existing_column(background_hdu, POSSIBLE_SPECTRUM_COLUMNS)
         scale = _background_scale(source_header, background_header)
+        # The base scale is for counts; adapt it to the stored column units.
+        if background_column.upper() in RATE_COLUMNS:
+            exposure = _header_float(background_header, 'EXPOSURE', np.nan)
+            if not np.isfinite(exposure) or exposure <= 0:
+                raise ValueError(f'{background_path}: RATE column but no valid EXPOSURE keyword.')
+            scale *= exposure
+        if source_column.upper() in RATE_COLUMNS:
+            exposure = _header_float(source_header, 'EXPOSURE', np.nan)
+            if not np.isfinite(exposure) or exposure <= 0:
+                raise ValueError(f'{pha_path}: RATE column but no valid EXPOSURE keyword.')
+            scale /= exposure
         min_size = min(len(values), len(bkg_values))
         values = values[:min_size] - scale * bkg_values[:min_size]
         uncertainties = np.sqrt(uncertainties[:min_size] ** 2 + (scale * bkg_uncertainties[:min_size]) ** 2)
         channel = channel[:min_size]
+    response_sigma = None
     if rmf_path is not None:
         rmf_channel, e_min, e_max = _read_ebounds_from_rmf(rmf_path)
         lookup = {int(ch): i for i, ch in enumerate(rmf_channel)}
@@ -255,11 +409,135 @@ def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Pat
         bin_width = e_max[idx] - e_min[idx]
         values = values[valid]
         uncertainties = uncertainties[valid]
+        resolution_energy, resolution_sigma = _read_rmf_resolution(rmf_path)
+        response_sigma = np.interp(
+            energy,
+            resolution_energy,
+            resolution_sigma,
+            left=resolution_sigma[0],
+            right=resolution_sigma[-1],
+        )
     else:
         energy = channel.astype(float)
         bin_width = np.ones_like(energy, dtype=float)
+    arf_energy = None
+    effective_area = None
+    if arf_path is not None:
+        arf_energy, effective_area = _read_arf(arf_path)
     good = np.isfinite(energy) & np.isfinite(values) & np.isfinite(uncertainties) & (uncertainties > 0)
-    spectrum = Spectrum(energy[good], values[good], uncertainties[good], bin_width[good]).sorted()
+    spectrum = Spectrum(
+        energy[good],
+        values[good],
+        uncertainties[good],
+        bin_width[good],
+        rmf_path=rmf_path,
+        arf_path=arf_path,
+        arf_energy=arf_energy,
+        effective_area=effective_area,
+        response_sigma=None if response_sigma is None else response_sigma[good],
+    ).sorted()
     if as_arrays:
         return (spectrum.energy, spectrum.values, spectrum.uncertainties, spectrum.bin_width)
     return spectrum
+
+
+
+
+############################
+############################
+############################
+"""Read the count-space information needed for Poisson null simulations.
+
+This module does not modify ``fits_spectrum_loader``; it reuses its private
+helpers so that channel selection, column detection and background scaling
+are identical to the ones used when the Spectrum object was built.
+"""
+
+
+RATE_COLUMNS = {'RATE', 'COUNT_RATE'}
+
+
+def _read_pha_counts(path):
+    """Return (channel, counts, header, column) for one PHA file.
+
+    If the spectrum column is a rate, it is multiplied back by EXPOSURE so
+    that the returned array is always in counts.
+    """
+    fits = _import_astropy_fits()
+    with fits.open(path) as hdul:
+        hdu = _find_spectrum_hdu(hdul)
+        header = hdu.header
+        channel, values, _ = _extract_spectrum_arrays(hdu)
+        column = _find_existing_column(hdu, POSSIBLE_SPECTRUM_COLUMNS)
+    exposure = _header_float(header, 'EXPOSURE', np.nan)
+    if column.upper() in RATE_COLUMNS:
+        if not np.isfinite(exposure) or exposure <= 0:
+            raise ValueError(f'{path}: RATE column but no valid EXPOSURE keyword.')
+        values = values * exposure
+    return channel, values, header, column
+
+
+def read_pha_metadata(pha_path, rmf_path, background_path=None) -> dict:
+    """Collect exposure, scaling factors and raw counts on the RMF energy grid.
+
+    Returns
+    -------
+    dict with keys
+        exposure, areascal, backscal : float  (source header)
+        values_unit : {'counts', 'rate'}
+            Unit of the values returned by ``load_fits_spectrum`` for this file.
+        bkg_scale : float
+            Factor applied to background counts before subtraction (same as
+            the loader). 0.0 when no background is given.
+        energy, bin_width : numpy.ndarray
+            Channel energy centres and widths from EBOUNDS.
+        src_counts, bkg_counts : numpy.ndarray
+            Raw counts per channel on that grid. ``bkg_counts`` is zeros when
+            no background is given.
+    """
+    channel, src_counts, src_header, column = _read_pha_counts(pha_path)
+
+    bkg_scale = 0.0
+    bkg_counts = np.zeros_like(src_counts)
+    if background_path is not None:
+        bkg_channel, bkg_raw, bkg_header, _ = _read_pha_counts(background_path)
+        bkg_scale = _background_scale(src_header, bkg_header)
+        lookup = {int(c): v for c, v in zip(bkg_channel, bkg_raw)}
+        bkg_counts = np.array([lookup.get(int(c), 0.0) for c in channel])
+
+    rmf_channel, e_min, e_max = _read_ebounds_from_rmf(rmf_path)
+    lookup = {int(c): i for i, c in enumerate(rmf_channel)}
+    idx = np.array([lookup.get(int(c), -1) for c in channel])
+    valid = idx >= 0
+    idx = idx[valid]
+
+    return {
+        'exposure': _header_float(src_header, 'EXPOSURE', np.nan),
+        'areascal': _header_float(src_header, 'AREASCAL', 1.0),
+        'backscal': _header_float(src_header, 'BACKSCAL', 1.0),
+        'values_unit': 'rate' if column.upper() in RATE_COLUMNS else 'counts',
+        'bkg_scale': bkg_scale,
+        'energy': (e_min[idx] + e_max[idx]) / 2.0,
+        'bin_width': e_max[idx] - e_min[idx],
+        'src_counts': src_counts[valid],
+        'bkg_counts': bkg_counts[valid],
+    }
+
+def align_to_spectrum(meta: dict, spectrum_energy) -> dict:
+    """Restrict metadata arrays to the bins present in ``spectrum_energy``.
+
+    The loader removes bins with non-finite or non-positive uncertainties and
+    sorts by energy; this selects the matching channels by exact energy match.
+    """
+    spectrum_energy = np.asarray(spectrum_energy, dtype=float)
+    order = np.argsort(meta['energy'])
+    sorted_energy = meta['energy'][order]
+    pos = np.searchsorted(sorted_energy, spectrum_energy)
+    pos = np.clip(pos, 0, len(sorted_energy) - 1)
+    if not np.allclose(sorted_energy[pos], spectrum_energy, rtol=0, atol=1e-9):
+        raise ValueError('Spectrum energies do not match RMF EBOUNDS grid.')
+    sel = order[pos]
+    out = dict(meta)
+    for key in ('energy', 'bin_width', 'src_counts', 'bkg_counts'):
+        out[key] = meta[key][sel]
+    return out

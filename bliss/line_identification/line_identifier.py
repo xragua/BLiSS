@@ -103,7 +103,7 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
         "area",
         "earea",
         "ew",
-        "cluster_probability",
+        "bliss_score",
     ]
 
     return candidates[[col for col in desired_order if col in candidates.columns]]
@@ -137,11 +137,6 @@ def add_most_probable_ion(pd_fit, v_doppler_kms, pd_data=st_reduced):
         sigma_center_energy = row.get("sigma", None)
 
         candidates = identify_line(
-
-            center_energy,
-            sigma_center_energy,
-            v_doppler_kms,
-
             center_energy_keV=center_energy,
             center_sigma_keV=sigma_center_energy,
             v_doppler_kms=v_doppler_kms,
@@ -182,10 +177,6 @@ def get_all_compatible_lines(pd_fit, v_doppler_kms, pd_data=st_reduced):
         sigma_center_energy = row.get("sigma", None)
 
         candidates = identify_line(
-
-            center_energy,
-            sigma_center_energy,
-            v_doppler_kms,
             center_energy_keV=center_energy,
             center_sigma_keV=sigma_center_energy,
             v_doppler_kms=v_doppler_kms,

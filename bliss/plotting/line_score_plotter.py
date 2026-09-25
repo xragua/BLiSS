@@ -4,14 +4,15 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 
-def plot_line_prob(df, show=True, size_fig_input=None):
-    """Plot candidate cluster probability as a function of fitted line energy."""
-    df = df.copy()
+def plot_bliss_score(df, show=True, size_fig_input=None):
+    """Plot candidate bliss_score as a function of fitted line energy."""
+    from ..score_columns import normalize_score_columns
+    df = normalize_score_columns(df)
     df = df[
         np.isfinite(df["center"])
         & np.isfinite(df["sigma"])
         & np.isfinite(df["amplitude"])
-        & np.isfinite(df["cluster_probability"])
+        & np.isfinite(df["bliss_score"])
         & (df["sigma"] > 0)
     ].reset_index(drop=True)
     if len(df) == 0:
@@ -22,7 +23,7 @@ def plot_line_prob(df, show=True, size_fig_input=None):
         df["center"].max() + 3 * df["sigma"].max(),
         600,
     )
-    unique_probs = np.sort(df["cluster_probability"].unique())[::-1]
+    unique_scores = np.sort(df["bliss_score"].unique())[::-1]
     cmap = plt.cm.rainbow
     norm = plt.Normalize(vmin=0.0, vmax=1.0)
     fig, ax = plt.subplots(figsize=size_fig)
@@ -31,7 +32,7 @@ def plot_line_prob(df, show=True, size_fig_input=None):
     max_y = 0.0
     offset = 0.02 * df["amplitude"].max()
     for _, row in df.iterrows():
-        p = float(row["cluster_probability"])
+        p = float(row["bliss_score"])
         color = cmap(norm(p))
 
         mu = float(row["center"])
@@ -65,14 +66,14 @@ def plot_line_prob(df, show=True, size_fig_input=None):
             [0],
             color=cmap(norm(float(p))),
             lw=2,
-            label=f"p = {p:.3f}",
+            label=f"bliss_score = {p:.3f}",
         )
-        for p in unique_probs
+        for p in unique_scores
     ]
 
     ax.legend(
         handles=legend_elements,
-        title="Cluster Probability",
+        title="bliss_score",
         loc="upper right",
         framealpha=0.8,
         fontsize=9,
@@ -80,7 +81,7 @@ def plot_line_prob(df, show=True, size_fig_input=None):
 
     ax.set_ylim(0, max_y * 1.25)
     ax.set_title(
-        "Gaussian components colored by cluster_probability"
+        "Gaussian components colored by bliss_score"
         + (" with ion labels" if has_ion else "")
     )
     ax.set_xlabel("Energy (keV)")

@@ -3,17 +3,17 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 
-from bliss.plotting.line_probability_plotter import plot_line_prob
+from bliss.plotting.line_score_plotter import plot_bliss_score
 
 def test_empty_probability_plot():
     df = pd.DataFrame({
         "center": [],
         "sigma": [],
         "amplitude": [],
-        "cluster_probability": []
+        "bliss_score": []
     })
 
     try:
-        plot_line_prob(df, show=False)
+        plot_bliss_score(df, show=False)
     except Exception:
         pass

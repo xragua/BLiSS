@@ -5,7 +5,7 @@ import pytest
 import matplotlib
 matplotlib.use("Agg")
 
-from bliss.line_search.empirical_baseline import moving_average, base_calculator
+from bliss.line_search.empirical_baseline import base_calculator
 from bliss.line_search.peak_selection import find_peaks_new
 from bliss.line_search.gaussian_models import gaussian, n_gaussian, p0_generator, p0_generator_final
 from bliss.line_search.candidate_regions import (
@@ -16,11 +16,11 @@ from bliss.line_search.candidate_regions import (
     _fit_candidate_block,
     return_raw_lines,
 )
-from bliss.spectrum_data.rebinning_tools import _clean_arrays, rebin_bins, rebin_snr, rebin_resolution
+from bliss.spectrum_data.rebinning_tools import rebin_bins, rebin_snr, rebin_resolution
 from bliss.spectrum_data.text_spectrum_loader import load_text_spectrum
 from bliss.spectrum_data.spectrum_container import Spectrum
 from bliss.synthetic_probability.synthetic_spectra import SyntheticSpectrumGenerator, calculate_synthetic_lines_spectra
-from bliss.synthetic_probability.gmm_probability import GMMLineProbabilityEvaluator, eval_line_probability_gmm, real_probability
+from bliss.synthetic_probability.gmm_score import GMMBlissScoreEvaluator, eval_bliss_score_gmm, calculate_bliss_score
 from bliss.line_identification.atomic_line_table import load_atomic_database
 from bliss.line_identification.line_identifier import (
     LineIdentifier,
@@ -28,7 +28,7 @@ from bliss.line_identification.line_identifier import (
     get_all_compatible_lines,
     identify_line,
 )
-from bliss.plotting.line_probability_plotter import plot_line_prob
+from bliss.plotting.line_score_plotter import plot_bliss_score
 from bliss.plotting.run_output_manager import create_bliss_results_folder, ensure_output_folder
 from bliss.plotting.spectrum_diagnostic_plotter import plot_final_bliss_fit
 from bliss.isis_interface.isis_script_writer import (
@@ -123,7 +123,7 @@ def test_spectrum_loading_rebinning_and_container(tmp_path):
     assert len(xr) == len(yr) == len(syr)
 
 
-def test_synthetic_spectra_and_gmm_probability():
+def test_synthetic_spectra_and_gmm_score():
     t = np.linspace(1, 2, 30)
     c = np.ones(30)
     c[3] = 100.0
@@ -131,8 +131,8 @@ def test_synthetic_spectra_and_gmm_probability():
     tsim, simc, ssimc = calculate_synthetic_lines_spectra(t, c, sc, num_simulations=3, seed=1, z_score_th=2)
     assert len(tsim) == len(simc) == len(ssimc) == 90
     assert SyntheticSpectrumGenerator(num_simulations=1, seed=2).generate(t, c, sc)[0].size == 30
-    assert real_probability(0, 10) == 0
-    assert real_probability(10, 2) == pytest.approx(0.8)
+    assert calculate_bliss_score(0, 10) == 0
+    assert calculate_bliss_score(10, 2) == pytest.approx(0.8)
 
     lines = pd.DataFrame(
         {
@@ -150,9 +150,9 @@ def test_synthetic_spectra_and_gmm_probability():
             "noise_on_block": [2.0, 2.0, 2.0],
         }
     )
-    out = eval_line_probability_gmm(lines.copy(), simlines.copy(), np.linspace(1, 3, 20), np.linspace(1, 3, 10), k_min=1, k_max=2, covariance_types=("full", "diag"), show_plot=True)
-    assert "cluster_probability" in out.columns
-    assert GMMLineProbabilityEvaluator(k_min=1, k_max=1).evaluate(lines.copy(), simlines.copy(), np.arange(5), np.arange(5)).shape[0] == 2
+    out = eval_bliss_score_gmm(lines.copy(), simlines.copy(), np.linspace(1, 3, 20), np.linspace(1, 3, 10), k_min=1, k_max=2, covariance_types=("full", "diag"), show_plot=True)
+    assert "bliss_score" in out.columns
+    assert GMMBlissScoreEvaluator(k_min=1, k_max=1).evaluate(lines.copy(), simlines.copy(), np.arange(5), np.arange(5)).shape[0] == 2
 
 
 def test_line_identification_and_atomic_table():
@@ -173,8 +173,8 @@ def test_line_identification_and_atomic_table():
 
 
 def test_plotting_and_output_helpers(tmp_path):
-    df = pd.DataFrame({"center": [6.4, 6.7], "sigma": [0.1, 0.1], "amplitude": [10, 15], "cluster_probability": [0.8, 0.9], "ion": ["Fe I", "Fe XXV"]})
-    fig, ax = plot_line_prob(df, show=True)
+    df = pd.DataFrame({"center": [6.4, 6.7], "sigma": [0.1, 0.1], "amplitude": [10, 15], "bliss_score": [0.8, 0.9], "ion": ["Fe I", "Fe XXV"]})
+    fig, ax = plot_bliss_score(df, show=True)
     assert fig is not None and ax is not None
 
     out = tmp_path / "diagnostic.png"
