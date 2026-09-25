@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Cómo leer el cálculo de los p-valores - BLiSS</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+        <link href="../css/custom.css" rel="stylesheet" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "C\u00f3mo leer el c\u00e1lculo de los p-valores";
+        var mkdocs_page_input_path = "look_elsewhere.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="..">
+          <img src="../images/logo.png" class="logo" alt="Logo"/>
+        </a>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">GETTING STARTED</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">EXAMPLES</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../notebooks/Vela_x1_chandra/">Blind search on Chandra/HETG observation of Vela X-1</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../notebooks/Vela_x1_RGS/">Finding emission-line candidates in the Vela X-1 RGS spectrum</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../functions/">FUNCTIONS</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../references/">REFERENCES</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../contribute/">CONTRIBUTE</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">BLiSS</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Cómo leer el cálculo de los p-valores</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="como-leer-el-calculo-de-los-p-valores">Cómo leer el cálculo de los p-valores</h1>
+<p>La búsqueda devuelve cinco p-valores además de <code>bliss_score</code>. Reutiliza las
+candidatas de las simulaciones que ya se hicieron para BLiSS: no genera más
+espectros ni repite los ajustes para calcular estos p-valores.</p>
+<h2 id="1-recorrido-del-programa">1. Recorrido del programa</h2>
+<p>En <code>bliss/line_search/blind_line_search.py</code>, <code>BlindLineSearchPipeline.run</code>:</p>
+<ol>
+<li>Prepara el espectro y estima el continuo empírico.</li>
+<li>Busca regiones con exceso y ajusta las candidatas observadas.</li>
+<li>Genera las N simulaciones elegidas por el usuario y busca sus candidatas.</li>
+<li>Calcula <code>bliss_score</code> con el GMM, como antes.</li>
+<li>Selecciona la banda nominal y calcula las medidas de las candidatas.</li>
+<li>Llama a <code>calculate_look_elsewhere_pvalues</code> con esas tablas ya calculadas.</li>
+<li>Devuelve la tabla o realiza el ajuste global opcional.</li>
+</ol>
+<p>Justo después de cada ajuste local, <code>_fit_candidate_block</code> en
+<code>bliss/line_search/candidate_regions.py</code> descarta una componente si cumple
+<strong>cualquiera</strong> de estas condiciones:</p>
+<pre><code class="language-python">ecenter &gt; 0.1  # keV
+esigma &gt; 0.5   # keV
+eamplitude &gt; 10 * max(y_del_bloque)
+</code></pre>
+<p><code>y_del_bloque</code> son los valores observados del bloque, incluido el continuo.
+Si hay varias líneas en él, comparten ese límite para <code>eamplitude</code>, pero
+se decide sobre cada componente por separado. La igualdad con un límite
+se admite. No se repite el ajuste después de descartar componentes.</p>
+<p>El corte se aplica tanto a los datos como a cada simulación, usando el máximo
+de su propio bloque. Las componentes descartadas no llegan al GMM, a los
+p-valores, al ajuste global ni al catálogo. Para aplicar esta selección a resultados anteriores
+hay que repetir la búsqueda, incluidas las simulaciones.</p>
+<p><code>num_synthetic_simulations=N</code> sigue siendo el parámetro para elegir N.
+El valor por defecto continúa siendo 10; se admiten enteros desde 0.
+<code>self.n_sim</code> guarda el número real de simulaciones generadas, incluidas
+aquellas sin candidatas, también si todas fueron descartadas por estos cortes.
+Con N=0 vale 0, no 1.</p>
+<pre><code class="language-python">candidate_lines = find_candidate_lines(
+    pha, rmf,
+    en1=en1, en2=en2,
+    num_synthetic_simulations=N,
+    synthetic_seed=42,
+)
+</code></pre>
+<h2 id="2-que-se-compara">2. Qué se compara</h2>
+<p>El cálculo está en <code>bliss/synthetic_probability/look_elsewhere.py</code>.
+<code>LOOK_ELSEWHERE_STATISTICS</code> enumera las cinco medidas:</p>
+<table>
+<thead>
+<tr>
+<th>Medida</th>
+<th>Significado durante la búsqueda local</th>
+<th>Columna de salida</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>area</code></td>
+<td>Área de la gaussiana: amplitud × sigma × √(2π)</td>
+<td><code>p_global_area</code></td>
+</tr>
+<tr>
+<td><code>snr_area</code></td>
+<td>Área dividida por su error, incluida la covarianza</td>
+<td><code>p_global_snr_area</code></td>
+</tr>
+<tr>
+<td><code>snr_peak</code></td>
+<td>Amplitud dividida por la incertidumbre media del bloque</td>
+<td><code>p_global_snr_peak</code></td>
+</tr>
+<tr>
+<td><code>ew</code></td>
+<td>Área dividida por el continuo en la candidata, ×1000 para eV</td>
+<td><code>p_global_ew</code></td>
+</tr>
+<tr>
+<td><code>relative_power</code></td>
+<td>(Valor − continuo) / (valor + continuo) en la candidata</td>
+<td><code>p_global_relative_power</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>calculate_look_elsewhere_pvalues</code> tiene tres pasos comentados:</p>
+<ol>
+<li><strong>Seleccionar las medidas elegibles.</strong> Se exige un ajuste local convergente
+   y evaluable, con el centro dentro de <code>en1–en2</code>, tanto en datos como en
+   simulaciones. Las comprobaciones numéricas internas
+   se recalculan solo para esta selección, sin modificar la tabla original.
+   No se impone un umbral de S/N, área o <code>bliss_score</code>. Cada medida debe ser
+   finita; si falta una, solo su p-valor queda sin calcular.</li>
+<li><strong>Obtener los máximos.</strong> <code>simulation_maxima</code> agrupa por <code>sim</code> una sola vez
+   para las cinco medidas. Devuelve una fila por simulación: N filas en total.
+   Una simulación sin candidatas elegibles tiene máximos <code>NaN</code> y se conserva.</li>
+<li><strong>Comparar con los máximos.</strong> <code>monte_carlo_pvalues</code> calcula cada p-valor
+   contando las simulaciones cuyo máximo iguala o supera el valor observado.</li>
+</ol>
+<p>El margen <code>energy_pad</code> ayuda a detectar y ajustar cerca de los extremos.
+Las candidatas cuyo centro queda fuera de la banda nominal no participan
+en esta comparación, ni en datos ni en simulaciones.</p>
+<p>Las reglas de elegibilidad son independientes de las del GMM: por ejemplo,
+un problema con una variable que necesita el GMM no invalida automáticamente
+una medida distinta que sí se puede comparar con las simulaciones.</p>
+<h2 id="3-formula-y-ejemplo">3. Fórmula y ejemplo</h2>
+<p>Para una medida T de una candidata:</p>
+<pre><code class="language-text">k = número de simulaciones con máximo(T) &gt;= T observado
+p_global_T = (k + 1) / (N + 1)
+</code></pre>
+<p>Se utiliza el máximo de cada espectro simulado para incluir la posibilidad
+de encontrar un exceso en cualquier punto de la banda buscada. Esto es el
+efecto look-elsewhere; véase <a href="https://arxiv.org/abs/1005.1891">Gross y Vitells</a>.</p>
+<p>Ejemplo: si N=99 y tres simulaciones alcanzan o superan el valor observado,
+el p-valor es 4/100=0.04. Si ninguna lo supera, es 1/100=0.01, no cero.
+La corrección de Monte Carlo evita ceros con muestras finitas;
+véase <a href="https://arxiv.org/abs/1603.05766">Phipson y Smyth</a>.</p>
+<p>Los empates cuentan como superaciones. Las simulaciones sin candidatas
+elegibles no superan el valor observado, pero permanecen en el denominador N.
+Con N=0 todos los p-valores quedan en <code>NaN</code>. Un ajuste observado inválido o
+una medida no finita también deja su p-valor en <code>NaN</code>.</p>
+<p>El mínimo que se puede devolver es <code>1/(N+1)</code>: con el valor por defecto de
+10 simulaciones, aproximadamente 0.091. Llegar a ese mínimo significa que
+ninguna de esas simulaciones superó la medida; no determina una cola más pequeña.</p>
+<h2 id="4-eficiencia-y-como-inspeccionarlo">4. Eficiencia y cómo inspeccionarlo</h2>
+<p><code>simulation_maxima</code> reduce las candidatas a una tabla de N filas y cinco
+columnas. Para cada columna, <code>monte_carlo_pvalues</code> ordena los máximos una vez
+y usa <code>searchsorted(..., side='left')</code> para contar los valores mayores o
+iguales. No crea una matriz de candidatas observadas × simulaciones.</p>
+<p>El trabajo adicional es agrupar números, ordenarlos y compararlos.
+Los ajustes y la generación de espectros siguen ocurriendo una sola vez.
+Si utilizas una instancia de <code>BlindLineSearchPipeline</code>, puedes inspeccionar
+<code>pipeline.null_maxima</code> y <code>pipeline.n_sim</code> después de <code>run</code>.</p>
+<h2 id="5-que-significa-global-y-que-sucede-despues">5. Qué significa «global» y qué sucede después</h2>
+<p>Aquí «global» significa que se ha recorrido toda la banda de búsqueda.
+No significa que el p-valor proceda del ajuste global multigaussiano.</p>
+<p>Si ejecutas <code>fit_global</code>, se conservan los p-valores obtenidos durante la
+búsqueda local. El área, EW y S/N del ajuste global pueden cambiar; los
+p-valores siguen describiendo la detección local original. Si la tabla de
+entrada no traía p-valores, el ajuste global los deja en <code>NaN</code>.</p>
+<p>Cada p-valor es una estimación condicionada al continuo empírico y al modelo
+de ruido usados en las simulaciones. No es la probabilidad de que una línea
+sea falsa. Cada columna corrige la búsqueda en energía para su propia medida;
+no corrige escoger después el menor de los cinco p-valores, ni combinar
+observaciones, bandas o brazos instrumentales distintos.</p>
+<h2 id="6-comprobaciones-del-codigo">6. Comprobaciones del código</h2>
+<p><code>tests/test_look_elsewhere_pipeline.py</code> comprueba máximos conocidos, empates,
+simulaciones vacías, N=0, límites de banda, ajustes inválidos, medidas no
+disponibles y conservación de los p-valores tras un ajuste global.
+También compara el conteo rápido con un conteo directo y comprueba que la
+búsqueda llama una sola vez al generador y realiza N+1 detecciones.</p>
+              
+            </div>
+          </div><footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
