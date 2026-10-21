@@ -1,1 +1,1 @@
-"""Synthetic-spectrum and score-estimation utilities."""
+"""Synthetic-spectrum and Monte Carlo significance utilities."""

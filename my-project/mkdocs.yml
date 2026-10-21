@@ -14,9 +14,9 @@ nav:
   - GETTING STARTED: index.md
 
   - EXAMPLES:
-      - "Vela X-1 Chandra: soft band 0.5–3 keV": notebooks/vela_x1_2001_0.5-3keV.ipynb
-      - "Vela X-1 Chandra: Fe band 6–8 keV": notebooks/vela_x1_2001_6-8keV.ipynb
-      - "XTE J1855-026 example": notebooks/XTE_J1855-026.ipynb
+      - "Vela X-1 Chandra": notebooks/Vela_x1_chandra.ipynb
+      - "Vela X-1 XMM-RGS": notebooks/Vela_x1_RGS.ipynb
+
 
   - FUNCTIONS: functions.md
   - REFERENCES: references.md

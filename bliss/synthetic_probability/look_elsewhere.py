@@ -68,12 +68,12 @@ def calculate_look_elsewhere_pvalues(lines, synthetic_candidates, n_sim, *, en1,
 
     Both inputs contain metrics from local fits. Eligibility requires a
     recorded converged, evaluable fit and a centroid inside [en1, en2].
-    Each statistic must be finite; no S/N, area, or BLiSS-score threshold
-    is applied. A missing statistic only
+    Each statistic must be finite; no S/N or area threshold is applied.
+    A missing statistic only
     prevents evaluation of its own p-value.
 
-    Fit quality is recomputed for the masks alone: extra GMM feature checks
-    must not select this comparison. Original rows, flags and scores are kept.
+    Fit quality is recomputed for the eligibility masks.
+    Original rows, measurements and flags are kept.
     """
     if not np.isfinite([en1, en2]).all() or en2 <= en1:
         raise ValueError('Require finite energy limits with en2 > en1.')

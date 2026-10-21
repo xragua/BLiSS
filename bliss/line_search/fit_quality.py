@@ -1,4 +1,4 @@
-"""Keep numerical fit quality separate from candidate detection scores."""
+"""Record numerical fit quality for candidate evaluation."""
 import numpy as np
 import pandas as pd
 

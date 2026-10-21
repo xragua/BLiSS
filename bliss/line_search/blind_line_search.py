@@ -12,7 +12,6 @@ from .fit_quality import annotate_fit_quality, FIT_QUALITY_COLUMNS
 from .candidate_regions import return_raw_lines
 from .gaussian_models import n_gaussian, p0_generator_final, gaussian_area_error
 from ..synthetic_probability.synthetic_spectra import generate_null_realizations
-from ..synthetic_probability.gmm_score import eval_bliss_score_gmm
 from ..synthetic_probability.look_elsewhere import (
     P_VALUE_COLUMNS, calculate_look_elsewhere_pvalues,
 )
@@ -31,9 +30,9 @@ LINE_OUTPUT_COLUMNS = [
     'cov_amplitude_sigma',
     'relative_power', 'noise_on_block',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
-    'snr_area', 'ew', 'bliss_score',
+    'snr_area', 'ew',
     'response_feature',
-    'bliss_score_status', *FIT_QUALITY_COLUMNS, *P_VALUE_COLUMNS,]
+    *FIT_QUALITY_COLUMNS, *P_VALUE_COLUMNS,]
 
 CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
 FINAL_OUTPUT_COLUMNS = [
@@ -45,7 +44,6 @@ FINAL_OUTPUT_COLUMNS = [
     'relative_power',
     'snr_peak',
     'snr_area',
-    'bliss_score',
     'response_feature',
     *P_VALUE_COLUMNS,
 ]
@@ -64,7 +62,7 @@ class BlindLineSearchConfig:
         candidate detection and fitting.
 
     num_synthetic_simulations : int
-        Nonnegative number of synthetic spectra for bliss_score and the five
+        Nonnegative number of synthetic spectra for the five
         look-elsewhere p-values. Zero disables simulation-based significance.
     synthetic_seed : int or None
         Random seed used for synthetic-spectrum generation.
@@ -76,10 +74,6 @@ class BlindLineSearchConfig:
     response_feature_threshold : float
         Robust score above which unusually sharp ARF effective-area
         structure is flagged.
-
-    min_area_snr : float or None
-        Optional GMM preselection on covariance-aware area S/N, applied to
-        observed and null candidates. None (default) disables this cut.
 
     max_sigma_line : float
         Maximum Gaussian sigma allowed for an individual line candidate,
@@ -135,8 +129,6 @@ class BlindLineSearchConfig:
     rebin_scale: Optional[float] = None
     rebin_min_bins: int = 1
 
-    # No area-significance cut before the GMM by default.
-    min_area_snr: Optional[float] = None
 
 
 
@@ -524,8 +516,8 @@ def final_fit_and_metrics(
     Area errors use the final joint fit covariance, replacing local covariance.
     All amplitudes, centers and widths are free within their bounds.
     Every width is bounded above by ``max_sigma_line`` (default 0.1 keV).
-    Input ``bliss_score`` is preserved, including when the global fit fails.
-    It describes the earlier observed/null comparison. The returned table
+    Input detection p-values are preserved, including when the global fit fails.
+    They describe the earlier local search. The returned table
     contains exactly ``FINAL_OUTPUT_COLUMNS``; full diagnostics stay internal.
 
     The baseline parameters are used only when ``base``/``ylines`` are not
@@ -695,7 +687,7 @@ def _fit_global_with_diagnostics(
             print(f"Error final fitting: {exc}")
 
     # Detection p-values refer to the local search and remain unchanged by refitting.
-    clean_select = clean_lines[["bliss_score", "noise_on_block", "relative_power", *P_VALUE_COLUMNS]]
+    clean_select = clean_lines[["noise_on_block", "relative_power", *P_VALUE_COLUMNS]]
 
     result = pd.concat(
         [
@@ -788,13 +780,11 @@ def _fit_global_with_diagnostics(
     if not global_converged:
         result['center'] = result['fit_center_initial']
     result = annotate_fit_quality(result)
-    result['bliss_score_status'] = (clean_lines['bliss_score_status'].to_numpy()
-                              if 'bliss_score_status' in clean_lines else 'unavailable')
     result = _flag_response_features(result, spectrum, response_feature_threshold)
     result = result.reindex(columns=LINE_OUTPUT_COLUMNS)
 
-    # Keep the observed/null score and its status as provenance. Global fit
-    # failures are recorded in the separate fit-quality columns above.
+    # Keep local detection p-values as provenance. Global fit failures are
+    # recorded in the separate fit-quality columns above.
     result = pd.concat([result, rejected.reindex(columns=LINE_OUTPUT_COLUMNS)],
                        ignore_index=True)
     return result, yfit
@@ -1007,7 +997,7 @@ def fit_global(
 class BlindLineSearchPipeline:
     """Run the blind emission-line search on one spectrum.
 
-    By default, the pipeline now stops after candidate detection and bliss_score
+    By default, the pipeline now stops after candidate detection and p-value
     estimation. The expensive global multi-Gaussian fit can be run later with
     ``fit_global`` after the user filters the candidate table.
 
@@ -1040,7 +1030,7 @@ class BlindLineSearchPipeline:
         ``pha`` and ``rmf`` are required; ``arf`` and ``bkg`` are optional.
         The spectrum is rebinned conserving counts according to the config and
         converted to counts s^-1 keV^-1. The empirical baseline is computed from the full input spectrum.
-        Candidate detection, local Gaussian fitting, bliss_score estimation,
+        Candidate detection, local Gaussian fitting, p-value estimation,
         and the optional global fit are performed inside the selected energy
         interval enlarged by ``energy_pad``. The returned catalogue is finally
         restricted to the nominal ``en1``--``en2`` interval. Both modes return
@@ -1165,19 +1155,11 @@ class BlindLineSearchPipeline:
         self.synthetic_candidates = _add_candidate_metrics(synthetic_candidates)
         self.n_sim = len(null_realizations)
 
-        candidates = eval_bliss_score_gmm(
-            raw_candidates,
-            synthetic_candidates,
-            simx=spectrum.energy,
-            x=spectrum.energy,
-            n_sim=self.n_sim,
-            min_area_snr=self.config.min_area_snr,
-        )
         # ------------------------------------------------------------
         # Final catalogue restricted to the nominal science window
         # ------------------------------------------------------------
         selected = self._select_candidates(
-            candidates,
+            raw_candidates,
             en1=en1_use,
             en2=en2_use,
         )
@@ -1249,10 +1231,6 @@ class BlindLineSearchPipeline:
             self._active_spectrum,
             self.config.response_feature_threshold,
         )
-
-        # Preserve the score assigned during the observed/null comparison.
-        if 'bliss_score' not in clean_lines.columns:
-            clean_lines['bliss_score'] = np.nan
 
         for col in CANDIDATE_COLUMNS:
             if col not in clean_lines.columns:
@@ -1351,7 +1329,7 @@ def find_candidate_lines(
     synthetic_seed=None,
     config: Optional[BlindLineSearchConfig] = None,
 ):
-    """Run BLiSS up to candidate detection and bliss_score estimation.
+    """Run BLiSS up to candidate detection and p-value estimation.
 
     Parameters
     ----------

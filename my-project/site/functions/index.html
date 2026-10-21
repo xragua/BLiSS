@@ -91,8 +91,6 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#plotting">Plotting</a>
         <ul>
-    <li class="toctree-l3"><a class="reference internal" href="#plot_bliss_score">plot_bliss_score</a>
-    </li>
     <li class="toctree-l3"><a class="reference internal" href="#plot_global_fit">plot_global_fit</a>
     </li>
         </ul>
@@ -107,7 +105,7 @@
     </li>
         </ul>
     </li>
-    <li class="toctree-l2"><a class="reference internal" href="#advanced-simulation-and-scoring-utilities">Advanced simulation and scoring utilities</a>
+    <li class="toctree-l2"><a class="reference internal" href="#advanced-simulation-and-significance-utilities">Advanced simulation and significance utilities</a>
     </li>
     </ul>
                 </li>
@@ -151,7 +149,7 @@
 <li>Prepare and inspect the spectrum with <code>prepare_spectrum</code>.</li>
 <li>Optionally inspect the empirical baseline with <code>base_calculator</code>.</li>
 <li>Run the blind local search with <code>find_candidate_lines</code>.</li>
-<li>Filter the returned catalogue using the BLiSS score, the global Monte Carlo p-values, and any analysis-specific criteria.</li>
+<li>Filter the returned catalogue using the global Monte Carlo p-values, and any analysis-specific criteria.</li>
 <li>Run the optional simultaneous multi-Gaussian fit with <code>fit_global</code>.</li>
 <li>Optionally identify transitions and plot the results.</li>
 </ol>
@@ -174,7 +172,7 @@
 <li>returns the candidates as a <code>pandas.DataFrame</code>;</li>
 <li>automatically saves the same catalogue as <code>candidate_lines.csv</code>.</li>
 </ol>
-<p>The returned table or CSV file can then be passed programmatically to another spectral-fitting package or incorporated into an automated batch-analysis workflow. With <code>num_synthetic_simulations=0</code>, the <code>bliss_score</code> and <code>p_global_*</code> columns remain unavailable (<code>NaN</code>).</p>
+<p>The returned table or CSV file can then be passed programmatically to another spectral-fitting package or incorporated into an automated batch-analysis workflow. With <code>num_synthetic_simulations=0</code>, the <code>p_global_*</code> columns remain unavailable (<code>NaN</code>).</p>
 <p>The main functions are available from the top-level package:</p>
 <pre><code class="language-python">import numpy as np
 
@@ -189,7 +187,6 @@ from bliss import (
     find_candidate_lines,
     find_emission_lines,
     fit_global,
-    plot_bliss_score,
     plot_global_fit,
     identify_line,
     add_most_probable_ion,
@@ -402,7 +399,7 @@ line_excess = np.maximum(spectrum.values - baseline, 0.0)
 )
 </code></pre>
 <p>Run BLiSS up to local candidate detection and simulation-based assessment.</p>
-<p>This is the recommended first search step. BLiSS loads and rebins the folded PHA spectrum, estimates the empirical baseline on the full input band, searches the requested interval, fits the local Gaussian candidates, evaluates the empirical BLiSS score, and computes five global Monte Carlo p-values from the same null searches.</p>
+<p>This is the recommended first search step. BLiSS loads and rebins the folded PHA spectrum, estimates the empirical baseline on the full input band, searches the requested interval, fits the local Gaussian candidates, and computes five global Monte Carlo p-values from the same null searches.</p>
 <p>The function does <strong>not</strong> perform the final simultaneous multi-Gaussian fit. Filter the returned table first and pass the selected rows to <code>fit_global</code>.</p>
 <p><strong>Parameters</strong></p>
 <ul>
@@ -425,7 +422,7 @@ line_excess = np.maximum(spectrum.values - baseline, 0.0)
 <p>The returned table and CSV contain exactly:</p>
 <pre><code class="language-text">center, ecenter, sigma, esigma, amplitude, eamplitude,
 area, earea, ew, relative_power, snr_peak, snr_area,
-bliss_score, response_feature,
+response_feature,
 p_global_area, p_global_snr_area, p_global_snr_peak,
 p_global_ew, p_global_relative_power
 </code></pre>
@@ -470,10 +467,6 @@ p_global_ew, p_global_relative_power
 <td>Gaussian area divided by its covariance-aware error.</td>
 </tr>
 <tr>
-<td><code>bliss_score</code></td>
-<td>Empirical reliability score from the observed/null GMM comparison. It is not a probability or a p-value.</td>
-</tr>
-<tr>
 <td><code>response_feature</code></td>
 <td><code>True</code> when the candidate lies close to unusually sharp ARF structure. Without a usable ARF, it is <code>False</code>.</td>
 </tr>
@@ -484,7 +477,7 @@ p_global_ew, p_global_relative_power
 </tbody>
 </table>
 <p>For each <code>p_global_*</code>, BLiSS compares the observed statistic with the maximum value recovered in every eligible null search over the nominal <code>en1</code>–<code>en2</code> interval. If <code>k</code> of <code>N</code> null maxima are at least as large as the observed value, the reported value is <code>(k + 1) / (N + 1)</code>. Consequently, the smallest resolvable p-value is <code>1 / (N + 1)</code>. The five columns test five different statistics; they do not apply an additional correction for choosing among those statistics afterwards.</p>
-<p>The same <code>num_synthetic_simulations=N</code> controls both the BLiSS score and the five p-values. No second set of simulations is run. With <code>N=0</code>, <code>bliss_score</code> and all <code>p_global_*</code> values are unavailable (<code>NaN</code>).</p>
+<p>The parameter <code>num_synthetic_simulations=N</code> controls the five p-values. With <code>N=0</code>, all <code>p_global_*</code> values are unavailable (<code>NaN</code>).</p>
 <p><strong>Example</strong></p>
 <pre><code class="language-python">candidates = find_candidate_lines(
     pha=pha,
@@ -510,10 +503,9 @@ p_global_ew, p_global_relative_power
     &quot;p_global_relative_power&quot;,
 ]
 
-score_mask = candidates[&quot;bliss_score&quot;] &gt;= 0.90
 pvalue_mask = candidates[p_columns].le(0.01).any(axis=1)
 
-selected = candidates[score_mask | pvalue_mask].reset_index(drop=True)
+selected = candidates[pvalue_mask].reset_index(drop=True)
 </code></pre>
 <p>These thresholds are analysis choices, not fixed BLiSS defaults. Candidates flagged by <code>response_feature</code> should be inspected rather than automatically interpreted as astrophysical lines.</p>
 <hr />
@@ -535,7 +527,6 @@ selected = candidates[score_mask | pvalue_mask].reset_index(drop=True)
     rebin_method=&quot;none&quot;,
     rebin_scale=None,
     rebin_min_bins=1,
-    min_area_snr=None,
 )
 </code></pre>
 <p>Use this dataclass when the search needs more control than the convenience wrapper exposes.</p>
@@ -574,10 +565,6 @@ selected = candidates[score_mask | pvalue_mask].reset_index(drop=True)
 <tr>
 <td><code>response_feature_threshold</code></td>
 <td>Robust ARF-sharpness threshold used for <code>response_feature</code>.</td>
-</tr>
-<tr>
-<td><code>min_area_snr</code></td>
-<td>Optional covariance-aware area-S/N preselection before the GMM. <code>None</code> applies no area-S/N cut.</td>
 </tr>
 <tr>
 <td><code>final_fit_maxfev</code></td>
@@ -678,7 +665,7 @@ candidates = pipeline.run(
 <li><code>pandas.DataFrame</code> – Global-fit catalogue with the same compact columns as the local candidate table.</li>
 <li><code>(pandas.DataFrame, numpy.ndarray)</code> – Returned when <code>return_yfit=True</code>; the second item is the line-only model on <code>spectrum.energy</code>.</li>
 </ul>
-<p>The global fit recomputes the centroid, width, amplitude, area, equivalent width, and their relevant uncertainties. The area uncertainty includes amplitude-width covariance from the joint fit. The input <code>bliss_score</code> and all five <code>p_global_*</code> values are preserved because they describe the earlier local detection search; they are not recalculated from the global-fit measurements.</p>
+<p>The global fit recomputes the centroid, width, amplitude, area, equivalent width, and their relevant uncertainties. The area uncertainty includes amplitude-width covariance from the joint fit. All five input <code>p_global_*</code> values are preserved because they describe the earlier local detection search; they are not recalculated from the global-fit measurements.</p>
 <p><strong>Example</strong></p>
 <pre><code class="language-python">spectrum = prepare_spectrum(
     pha_path=pha,
@@ -733,22 +720,6 @@ global_lines, line_model = fit_global(
 <p>The staged <code>find_candidate_lines</code> → user filtering → <code>fit_global</code> workflow is preferable when the global fit should use only a scientifically selected subset.</p>
 <hr />
 <h2 id="plotting">Plotting</h2>
-<h3 id="plot_bliss_score"><code>plot_bliss_score</code></h3>
-<pre><code class="language-python">plot_bliss_score(df, show=True, size_fig_input=None)
-</code></pre>
-<p>Plot the fitted Gaussian components coloured by <code>bliss_score</code>.</p>
-<p>The input table must contain finite <code>center</code>, positive <code>sigma</code>, finite <code>amplitude</code>, and finite <code>bliss_score</code> values. If an <code>ion</code> column is present, the labels are added above the components. Historical <code>cluster_probability</code> columns are normalized automatically.</p>
-<p><strong>Returns</strong></p>
-<ul>
-<li><code>None</code> when <code>show=True</code>;</li>
-<li><code>(fig, ax)</code> when <code>show=False</code>.</li>
-</ul>
-<p><strong>Example</strong></p>
-<pre><code class="language-python">plot_bliss_score(global_lines)
-
-fig, ax = plot_bliss_score(global_lines, show=False)
-fig.savefig(&quot;bliss_scores.png&quot;, dpi=150, bbox_inches=&quot;tight&quot;)
-</code></pre>
 <h3 id="plot_global_fit"><code>plot_global_fit</code></h3>
 <pre><code class="language-python">plot_global_fit(
     spectrum,
@@ -794,7 +765,7 @@ identified = identifier.add_most_probable(global_lines)
 all_matches = identifier.all_compatible(global_lines)
 </code></pre>
 <hr />
-<h2 id="advanced-simulation-and-scoring-utilities">Advanced simulation and scoring utilities</h2>
+<h2 id="advanced-simulation-and-significance-utilities">Advanced simulation and significance utilities</h2>
 <p>The high-level search functions call these utilities automatically. They are exposed mainly for validation and method-development work.</p>
 <table>
 <thead>
@@ -807,18 +778,6 @@ all_matches = identifier.all_compatible(global_lines)
 <tr>
 <td><code>generate_null_realizations(spectrum_full, base_full, fit_en1, fit_en2, config, *, noise_model=None, window_width=None)</code></td>
 <td>Generate line-free null spectra while reproducing the observed processing chain. Returns a list of <code>NullRealization</code> objects.</td>
-</tr>
-<tr>
-<td><code>GMMBlissScoreEvaluator(k_min=1, k_max=20, covariance_types=("full",), min_area_snr=None)</code></td>
-<td>Configure the Gaussian-mixture comparison between observed and null candidates.</td>
-</tr>
-<tr>
-<td><code>eval_bliss_score_gmm(lines, simlines, simx, x, ..., n_sim=1, min_area_snr=None)</code></td>
-<td>Functional interface to the same GMM scoring step. It preserves all observed rows and marks candidates whose fits are not evaluable.</td>
-</tr>
-<tr>
-<td><code>calculate_bliss_score(real_rate, sim_rate)</code></td>
-<td>Compute the clipped empirical rate contrast <code>(real_rate - sim_rate) / real_rate</code>. This score is not a probability.</td>
 </tr>
 <tr>
 <td><code>final_fit_and_metrics(spectrum, clean_lines, ...)</code></td>

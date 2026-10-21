@@ -242,7 +242,7 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
                     for k in range(len(popt_)):
                         eamplitude, ecenter, esigma = errors_[k]
                         # Apply the same post-fit cut to observed and null lines,
-                        # before they can enter scoring, refitting or output.
+                        # before they can enter significance evaluation, refitting or output.
                         if (ecenter > 1 or eamplitude > max_amplitude_error):
                             continue
                         rows.append({'fit_converged': True,

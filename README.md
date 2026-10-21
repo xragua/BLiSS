@@ -33,7 +33,6 @@ Originally developed for X-ray spectroscopy, BLiSS is designed around a general 
   
 - **Null-spectrum evaluation**
   - Reports five global Monte Carlo p-values based on synthetic null spectra.
-  - Provides an additional empirical BLiSS score derived using Gaussian mixture modelling.
 
 - **Reproducible analyses**
   - Applies identical search criteria across large spectral samples.

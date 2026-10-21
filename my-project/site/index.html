@@ -90,7 +90,7 @@
                 <h1 id="bliss-blind-line-search-system">BLiSS — Blind Line Search System</h1>
 <p><strong>BLiSS</strong> is an open-source Python package for finding emission lines in spectra without telling the code where to look first. In other words: a <strong>real blind line-search algorithm</strong> — you only need your spectrum.</p>
 <p><strong>BLiSS</strong> was designed to simplify and speed up spectral analysis in X-ray astronomy. Instead of manually inspecting spectra, guessing candidate energies, and testing lines one by one, <strong>BLiSS</strong> performs an automatic search for statistically significant emission features and then cross-matches them with atomic transitions.</p>
-<p>The package combines Gaussian line-profile fitting, statistical scoring, and database-based identification using XSTAR atomic data. It is especially useful when the continuum is complex, uncertain, or simply not the main focus of the analysis.</p>
+<p>The package combines Gaussian line-profile fitting, Monte Carlo significance estimation, and database-based identification using XSTAR atomic data. It is especially useful when the continuum is complex, uncertain, or simply not the main focus of the analysis.</p>
 <p>Although <strong>BLiSS</strong> was developed for X-ray spectra, the core idea is more general: if you have spectral data with uncertainties, BLiSS can help you search for emission features in a systematic and reproducible way.</p>
 <hr />
 <h2 id="features">Features</h2>
@@ -129,9 +129,8 @@
 <li>
 <p><strong>Null-spectrum evaluation</strong></p>
 </li>
-<li>Reports five global Monte Carlo p-values based on synthetic null spectra.</li>
 <li>
-<p>Provides an additional empirical BLiSS score derived using Gaussian mixture modelling.</p>
+<p>Reports five global Monte Carlo p-values based on synthetic null spectra.</p>
 </li>
 <li>
 <p><strong>Reproducible analyses</strong></p>
@@ -245,5 +244,5 @@ pip install -e .
 
 <!--
 MkDocs version : 1.6.1
-Build Date UTC : 2026-09-25 13:05:42.817490+00:00
+Build Date UTC : 2026-10-21 13:26:49.439513+00:00
 -->

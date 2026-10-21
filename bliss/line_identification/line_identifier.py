@@ -103,7 +103,6 @@ def identify_line(center_energy_keV, center_sigma_keV=None, v_doppler_kms=None, 
         "area",
         "earea",
         "ew",
-        "bliss_score",
     ]
 
     return candidates[[col for col in desired_order if col in candidates.columns]]

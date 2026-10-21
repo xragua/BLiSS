@@ -84,7 +84,7 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="como-leer-el-calculo-de-los-p-valores">Cómo leer el cálculo de los p-valores</h1>
-<p>La búsqueda devuelve cinco p-valores además de <code>bliss_score</code>. Reutiliza las
+<p>La búsqueda devuelve cinco p-valores. Reutiliza las
 candidatas de las simulaciones que ya se hicieron para BLiSS: no genera más
 espectros ni repite los ajustes para calcular estos p-valores.</p>
 <h2 id="1-recorrido-del-programa">1. Recorrido del programa</h2>
@@ -93,7 +93,6 @@ espectros ni repite los ajustes para calcular estos p-valores.</p>
 <li>Prepara el espectro y estima el continuo empírico.</li>
 <li>Busca regiones con exceso y ajusta las candidatas observadas.</li>
 <li>Genera las N simulaciones elegidas por el usuario y busca sus candidatas.</li>
-<li>Calcula <code>bliss_score</code> con el GMM, como antes.</li>
 <li>Selecciona la banda nominal y calcula las medidas de las candidatas.</li>
 <li>Llama a <code>calculate_look_elsewhere_pvalues</code> con esas tablas ya calculadas.</li>
 <li>Devuelve la tabla o realiza el ajuste global opcional.</li>
@@ -110,7 +109,7 @@ Si hay varias líneas en él, comparten ese límite para <code>eamplitude</code>
 se decide sobre cada componente por separado. La igualdad con un límite
 se admite. No se repite el ajuste después de descartar componentes.</p>
 <p>El corte se aplica tanto a los datos como a cada simulación, usando el máximo
-de su propio bloque. Las componentes descartadas no llegan al GMM, a los
+de su propio bloque. Las componentes descartadas no llegan a los
 p-valores, al ajuste global ni al catálogo. Para aplicar esta selección a resultados anteriores
 hay que repetir la búsqueda, incluidas las simulaciones.</p>
 <p><code>num_synthetic_simulations=N</code> sigue siendo el parámetro para elegir N.
@@ -170,7 +169,7 @@ Con N=0 vale 0, no 1.</p>
    y evaluable, con el centro dentro de <code>en1–en2</code>, tanto en datos como en
    simulaciones. Las comprobaciones numéricas internas
    se recalculan solo para esta selección, sin modificar la tabla original.
-   No se impone un umbral de S/N, área o <code>bliss_score</code>. Cada medida debe ser
+   No se impone un umbral de S/N o área. Cada medida debe ser
    finita; si falta una, solo su p-valor queda sin calcular.</li>
 <li><strong>Obtener los máximos.</strong> <code>simulation_maxima</code> agrupa por <code>sim</code> una sola vez
    para las cinco medidas. Devuelve una fila por simulación: N filas en total.
@@ -181,9 +180,7 @@ Con N=0 vale 0, no 1.</p>
 <p>El margen <code>energy_pad</code> ayuda a detectar y ajustar cerca de los extremos.
 Las candidatas cuyo centro queda fuera de la banda nominal no participan
 en esta comparación, ni en datos ni en simulaciones.</p>
-<p>Las reglas de elegibilidad son independientes de las del GMM: por ejemplo,
-un problema con una variable que necesita el GMM no invalida automáticamente
-una medida distinta que sí se puede comparar con las simulaciones.</p>
+<p>Las reglas de elegibilidad se evalúan para cada estadístico por separado.</p>
 <h2 id="3-formula-y-ejemplo">3. Fórmula y ejemplo</h2>
 <p>Para una medida T de una candidata:</p>
 <pre><code class="language-text">k = número de simulaciones con máximo(T) &gt;= T observado
