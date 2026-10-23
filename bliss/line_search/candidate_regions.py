@@ -1,6 +1,7 @@
 """Detect contiguous excess regions and fit local Gaussian candidate lines."""
 from __future__ import annotations
 from dataclasses import dataclass
+from numbers import Real
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
@@ -13,6 +14,16 @@ DEFAULT_MIN_PEAK_SEPARATION = 0.001
 units (keV by default). When the instrumental ``response_sigma`` is
 available, the effective local separation is
 ``max(DEFAULT_MIN_PEAK_SEPARATION, sigma_inst(E))``."""
+
+DEFAULT_MIN_RELATIVE_PROMINENCE = 0.05
+"""Strict lower bound on peak prominence divided by the block maximum."""
+
+
+def validate_min_relative_prominence(value):
+    """Require a finite relative candidate-selection threshold in [0, 1)."""
+    if (isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
+            or not np.isfinite(value) or not 0 <= value < 1):
+        raise ValueError("min_relative_prominence must be a finite number in [0, 1).")
 
 
 @dataclass
@@ -46,7 +57,8 @@ class CandidateRegionDetector:
     """Small wrapper object for detecting and fitting raw line candidates."""
 
     def detect(self, x, y, sy, ylines, base, response_sigma=None,
-               min_peak_separation=None, max_sigma_line=0.1):
+               min_peak_separation=None, max_sigma_line=0.1,
+               min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
         """Detect raw candidate lines from baseline-subtracted spectral excesses.
 
         Parameters
@@ -70,6 +82,9 @@ class CandidateRegionDetector:
             ``DEFAULT_MIN_PEAK_SEPARATION``.
         max_sigma_line : float, default: 0.1
             Upper sigma bound for every fitted component, in keV.
+        min_relative_prominence : float, default: 0.05
+            Retain peaks strictly above this fraction of the largest
+            prominence in their block. Must be finite and in [0, 1).
 
         Returns
         -------
@@ -82,6 +97,7 @@ class CandidateRegionDetector:
             response_sigma=response_sigma,
             min_peak_separation=min_peak_separation,
             max_sigma_line=max_sigma_line,
+            min_relative_prominence=min_relative_prominence,
         )
 
 
@@ -150,13 +166,15 @@ def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None):
     return blocks
 
 
-def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma_line=0.1):
+def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma_line=0.1,
+                         min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
     """Fit Gaussian components inside one candidate block.
 
     Peak retention follows two rules: (i) minimum separation -- among peaks
     closer than the local separation scale, only the most prominent is kept;
-    (ii) relative prominence -- peaks below 10 per cent of the largest
-    prominence in the block are discarded. The local separation scale is
+    (ii) relative prominence -- peaks must exceed ``min_relative_prominence``
+    times the largest prominence in the block (5 per cent by default).
+    The local separation scale is
     ``max(min_peak_separation, sigma_inst(E))`` when the instrumental
     ``response_sigma`` is available, and ``min_peak_separation`` otherwise.
     The number of Gaussians is capped at ``floor(n_bins / 4)``, keeping the
@@ -182,6 +200,9 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
         spectral-axis units. ``None`` uses ``DEFAULT_MIN_PEAK_SEPARATION``.
     max_sigma_line : float, default: 0.1
         Upper sigma bound for every fitted component, in keV.
+    min_relative_prominence : float, default: 0.05
+        Strict lower bound on peak prominence divided by the block maximum.
+        Must be finite and in [0, 1); this is not a significance threshold.
 
     Returns
     -------
@@ -191,6 +212,7 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
         uncertainty. ``cov_amplitude_sigma`` retains the amplitude/width
         covariance from this joint fit.
     """
+    validate_min_relative_prominence(min_relative_prominence)
     rows = []
     noise_on_block = np.mean(block.uncertainties)
     sep_floor = (DEFAULT_MIN_PEAK_SEPARATION if min_peak_separation is None
@@ -211,7 +233,8 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
                     local_sep = sep_floor
                 prominence_ratio = peaks.prominences[i] / max(peaks.prominences)
                 idx1 = abs(peaks.energy[i] - peaks.energy) < local_sep
-                if all(peaks.prominences[i] - peaks.prominences[idx1] >= 0) & (prominence_ratio > 0.1):
+                if (all(peaks.prominences[i] - peaks.prominences[idx1] >= 0)
+                        and prominence_ratio > min_relative_prominence):
                     good_list.append(i)
             good_peaks = (
                 peaks.loc[good_list]
@@ -311,7 +334,8 @@ def _add_line_context(fitted, x, y, base):
 
 
 def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
-                     min_peak_separation=None, max_sigma_line=0.1):
+                     min_peak_separation=None, max_sigma_line=0.1,
+                     min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
     """Detect contiguous excesses and fit preliminary Gaussian line candidates.
 
     Parameters
@@ -335,6 +359,10 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         is ``max(min_peak_separation, sigma_inst(E))``.
     max_sigma_line : float, default: 0.1
         Upper sigma bound for every fitted component, in keV.
+    min_relative_prominence : float, default: 0.05
+        Retain peaks strictly above this fraction of the largest prominence
+        in their block. Must be finite and in [0, 1). Use the same value for
+        observed and null spectra; this is not a significance threshold.
 
     Returns
     -------
@@ -347,13 +375,15 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         guess, their fitted amplitude/width/errors are NaN, and the failure
         message is stored. Non-evaluable attempts are not detection claims.
     """
+    validate_min_relative_prominence(min_relative_prominence)
     blocks = _build_candidate_blocks(x, y, sy, ylines, base,
                                      response_sigma=response_sigma)
     rows = []
     for block_index, block in enumerate(blocks):
         rows.extend(_fit_candidate_block(
             block, block_index, min_peak_separation=min_peak_separation,
-            max_sigma_line=max_sigma_line))
+            max_sigma_line=max_sigma_line,
+            min_relative_prominence=min_relative_prominence))
     fitted = pd.DataFrame(rows, columns=['amplitude', 'center', 'sigma',
                                          'eamplitude', 'ecenter', 'esigma',
                                          'cov_amplitude_sigma',

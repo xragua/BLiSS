@@ -9,9 +9,15 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from .empirical_baseline import base_calculator
 from .fit_quality import annotate_fit_quality, FIT_QUALITY_COLUMNS
-from .candidate_regions import return_raw_lines
+from .candidate_regions import (
+    return_raw_lines, DEFAULT_MIN_RELATIVE_PROMINENCE,
+    validate_min_relative_prominence,
+)
 from .gaussian_models import n_gaussian, p0_generator_final, gaussian_area_error
 from ..synthetic_probability.synthetic_spectra import generate_null_realizations
+from ..synthetic_probability.parallel_search import (
+    iter_parallel_null_candidates, validate_parallel_options,
+)
 from ..synthetic_probability.look_elsewhere import (
     P_VALUE_COLUMNS, calculate_look_elsewhere_pvalues,
 )
@@ -21,7 +27,9 @@ from ..spectrum_data.fits_spectrum_loader import (
     read_pha_metadata,
     align_to_spectrum,
 )
-from ..spectrum_data.rebinning_tools import rebin_counts
+from ..spectrum_data.rebinning_tools import (
+    rebin_counts, OPTIMAL_METHODS, OptimalBinningResponse, optimal_response_from_rmf,
+)
 
 # Full working schema: retain covariance, fit context and quality diagnostics
 # until all fitting and energy-window selection have finished.
@@ -66,6 +74,12 @@ class BlindLineSearchConfig:
         look-elsewhere p-values. Zero disables simulation-based significance.
     synthetic_seed : int or None
         Random seed used for synthetic-spectrum generation.
+    n_jobs : int
+        Maximum worker processes for null searches. Default 1 runs serially.
+        Spawned workers each use one BLAS/OpenMP thread.
+    simulation_batch_size : int
+        Simulations per worker task, default 5. Both parallel options must
+        be positive integers. Changing them preserves the random draws.
 
     final_fit_maxfev : int
         Maximum number of function evaluations allowed in the final
@@ -79,6 +93,12 @@ class BlindLineSearchConfig:
         Maximum Gaussian sigma allowed for an individual line candidate,
         in keV. Applied to local data/null fits and the optional global fit.
 
+    min_relative_prominence : float
+        Peaks must exceed this fraction of the largest prominence in their
+        candidate block. Default 0.05; finite values in [0, 1) are allowed.
+        Applied identically to observed and null searches, including workers.
+        This selects fit seeds, not statistical significance.
+
     noise_model : {'poisson', 'gaussian'}
         Statistical model of the synthetic null spectra. ``'poisson'`` draws
         counts at channel resolution (default); ``'gaussian'`` is kept only
@@ -91,8 +111,8 @@ class BlindLineSearchConfig:
     baseline_window : float, array-like, or callable
         Preferred physical width, in keV, of the running-median window
         used to estimate the empirical baseline. A callable ``f(energy)``
-        is evaluated on every grid where a baseline is computed (data and
-        each null realization), enabling energy-dependent windows.
+        is evaluated on the full observed grid. Its effective widths are
+        interpolated onto each null grid, enabling energy-dependent windows.
 
     max_range_fraction : float
         Maximum baseline-window width as a fraction of the total energy
@@ -125,9 +145,17 @@ class BlindLineSearchConfig:
     noise_model: str = "poisson"       # 'poisson' (default) | 'gaussian' (validation only)
 
     # Rebinning applied to count spectra (and to every null realization)
-    rebin_method: str = "none"          # 'none' | 'bins' | 'snr' | 'resolution'
+    rebin_method: str = "none"          # 'none' | 'bins' | 'snr' | 'resolution' | 'optimal'
     rebin_scale: Optional[float] = None
     rebin_min_bins: int = 1
+
+    n_jobs: int = 1
+    simulation_batch_size: int = 5
+    min_relative_prominence: float = DEFAULT_MIN_RELATIVE_PROMINENCE
+
+    def __post_init__(self):
+        validate_parallel_options(self.n_jobs, self.simulation_batch_size)
+        validate_min_relative_prominence(self.min_relative_prominence)
 
 
 
@@ -181,6 +209,8 @@ class NativeCounts:
         Instrumental sigma on the native grid.
     group : numpy.ndarray of int
         Output-bin index of each native channel after rebinning (-1 = dropped).
+    optimal_response : OptimalBinningResponse or None
+        RMF quantities reused to repeat optimal grouping for each null spectrum.
     """
     energy: np.ndarray
     bin_width: np.ndarray
@@ -191,6 +221,7 @@ class NativeCounts:
     exposure: float
     response_sigma: Optional[np.ndarray]
     group: np.ndarray
+    optimal_response: Optional[OptimalBinningResponse] = None
 
 
 def prepare_spectrum(
@@ -209,12 +240,22 @@ def prepare_spectrum(
     grid. Its ``native`` attribute keeps the channel-resolution counts,
     background and grouping needed to generate Poisson null realizations that
     follow exactly the same rebinning.
+
+    ``rebin_method="optimal"`` (alias ``"kaastra"``) uses Kaastra & Bleeker
+    (2016), equations 36--37 and Appendix B.1. Set ``rebin_scale=None`` and
+    ``rebin_min_bins=1``. The grid is chosen from the RMF and gross source-region
+    counts; optional background subtraction affects the values and propagated
+    uncertainties, not the counts used to choose groups. Empty native channels
+    are retained with a one-count variance floor, as in the Poisson nulls.
     """
+    optimal = str(rebin_method).lower() in OPTIMAL_METHODS
+    loader_options = {'keep_zero_uncertainty': True} if optimal else {}
     spectrum = load_fits_spectrum(
         pha_path=pha_path,
         background_path=background_path,
         rmf_path=rmf_path,
         arf_path=arf_path,
+        **loader_options,
     )
     meta = align_to_spectrum(
         read_pha_metadata(pha_path, rmf_path, background_path),
@@ -234,10 +275,20 @@ def prepare_spectrum(
         counts = spectrum.values.copy()
         counts_unc = spectrum.uncertainties.copy()
 
+    optimal_response = None
+    rebin_options = {}
+    if optimal:
+        # Empty native channels carry no photons but still span detector energy.
+        counts_unc = np.where(counts_unc == 0, 1.0, counts_unc)
+        optimal_response = optimal_response_from_rmf(rmf_path, spectrum.energy)
+        rebin_options = dict(source_counts=meta['src_counts'],
+                             optimal_response=optimal_response)
+
     # Count-conserving rebinning
     e_new, n_new, s_new, de_new, group = rebin_counts(
         spectrum.energy, counts, counts_unc, spectrum.bin_width,
         method=rebin_method, scale=rebin_scale, min_bins=rebin_min_bins,
+        **rebin_options,
     )
 
     # Density: counts s^-1 keV^-1
@@ -262,6 +313,7 @@ def prepare_spectrum(
         exposure=exposure,
         response_sigma=spectrum.response_sigma,
         group=group,
+        optimal_response=optimal_response,
     )
 
     return PreparedSpectrum(
@@ -1039,6 +1091,8 @@ class BlindLineSearchPipeline:
         over the nominal interval and are preserved by an optional global fit.
         """
 
+        validate_parallel_options(self.config.n_jobs, self.config.simulation_batch_size)
+        validate_min_relative_prominence(self.config.min_relative_prominence)
         output_dir = ensure_output_folder(output_dir)
 
         # ------------------------------------------------------------
@@ -1116,34 +1170,34 @@ class BlindLineSearchPipeline:
             base,
             response_sigma=spectrum.response_sigma,
             max_sigma_line=self.config.max_sigma_line,
+            min_relative_prominence=self.config.min_relative_prominence,
         )
 
         # ------------------------------------------------------------
         # Null realizations: same rebinning, baseline and detection
         # chain as the data, one candidate table per realization
         # ------------------------------------------------------------
-        null_realizations = generate_null_realizations(
-            spectrum_full,
-            base_full,
-            fit_en1,
-            fit_en2,
-            self.config,
-            window_width=baseline_info["window_width"],
-        )
-
-        synthetic_tables = []
-        for k, null in enumerate(null_realizations):
-            cand = return_raw_lines(
-                null.energy,
-                null.values,
-                null.uncertainties,
-                null.ylines,
-                null.baseline,
-                response_sigma=null.response_sigma,
-                max_sigma_line=self.config.max_sigma_line,
+        if self.config.n_jobs > 1:
+            synthetic_tables = list(iter_parallel_null_candidates(
+                spectrum_full, base_full, fit_en1, fit_en2, self.config,
+                window_width=baseline_info["window_width"],
+            ))
+        else:
+            null_realizations = generate_null_realizations(
+                spectrum_full, base_full, fit_en1, fit_en2, self.config,
+                window_width=baseline_info["window_width"], stream=True,
             )
-            cand["sim"] = k
-            synthetic_tables.append(cand)
+            synthetic_tables = []
+            for k, null in enumerate(null_realizations):
+                cand = return_raw_lines(
+                    null.energy, null.values, null.uncertainties,
+                    null.ylines, null.baseline,
+                    response_sigma=null.response_sigma,
+                    max_sigma_line=self.config.max_sigma_line,
+                    min_relative_prominence=self.config.min_relative_prominence,
+                )
+                cand["sim"] = k
+                synthetic_tables.append(cand)
 
         synthetic_candidates = (
             pd.concat(synthetic_tables, ignore_index=True)
@@ -1153,7 +1207,7 @@ class BlindLineSearchPipeline:
 
 
         self.synthetic_candidates = _add_candidate_metrics(synthetic_candidates)
-        self.n_sim = len(null_realizations)
+        self.n_sim = len(synthetic_tables)
 
         # ------------------------------------------------------------
         # Final catalogue restricted to the nominal science window

@@ -338,7 +338,7 @@ def _extract_spectrum_arrays(hdu):
         channel = np.arange(len(values), dtype=float)
     return (channel, values, uncertainties)
 
-def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Path]=None, rmf_path: Optional[str | Path]=None, arf_path: Optional[str | Path]=None, *, subtract_background: bool=True, as_arrays: bool=False) -> Spectrum | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Path]=None, rmf_path: Optional[str | Path]=None, arf_path: Optional[str | Path]=None, *, subtract_background: bool=True, as_arrays: bool=False, keep_zero_uncertainty: bool=False) -> Spectrum | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load a folded FITS PHA spectrum with optional RMF and ARF information.
 
     Parameters
@@ -361,6 +361,10 @@ def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Pat
         and propagate uncertainties in quadrature.
     as_arrays : bool, default: False
         If true, return raw arrays instead of a ``Spectrum`` object.
+    keep_zero_uncertainty : bool, default: False
+        Retain finite empty channels with zero uncertainty for subsequent count-space
+        grouping. Optimal binning needs empty channels to preserve the native
+        grid; ``prepare_spectrum`` supplies their one-count variance floor.
 
     Returns
     -------
@@ -424,7 +428,10 @@ def load_fits_spectrum(pha_path: str | Path, background_path: Optional[str | Pat
     effective_area = None
     if arf_path is not None:
         arf_energy, effective_area = _read_arf(arf_path)
-    good = np.isfinite(energy) & np.isfinite(values) & np.isfinite(uncertainties) & (uncertainties > 0)
+    valid_uncertainty = uncertainties > 0
+    if keep_zero_uncertainty:
+        valid_uncertainty |= (uncertainties == 0) & (values == 0)
+    good = np.isfinite(energy) & np.isfinite(values) & np.isfinite(uncertainties) & valid_uncertainty
     spectrum = Spectrum(
         energy[good],
         values[good],

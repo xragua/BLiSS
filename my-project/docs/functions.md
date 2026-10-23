@@ -89,7 +89,7 @@ The returned `PreparedSpectrum` also retains the native count-space information 
 - `rmf_path` *(path-like)* – Redistribution matrix. It supplies the channel energy bounds and the instrumental line-spread width.
 - `arf_path` *(path-like or None, default=None)* – Optional ancillary response. When provided, BLiSS can flag candidates close to sharp effective-area structure.
 - `background_path` *(path-like or None, default=None)* – Optional background PHA spectrum. It is scaled and subtracted before rebinning.
-- `rebin_method` *{"none", "bins", "snr", "resolution"}, default="none"* – Count-space grouping rule.
+- `rebin_method` *{"none", "bins", "snr", "resolution", "optimal", "kaastra"}, default="none"* – Count-space grouping rule; `"kaastra"` is an alias for `"optimal"`.
 - `rebin_scale` *(int, float, or None)* – Number of native bins, target S/N, or fixed energy width, depending on `rebin_method`.
 - `rebin_min_bins` *(int, default=1)* – Minimum number of native bins per output bin for S/N rebinning.
 
@@ -101,6 +101,37 @@ The rebinning methods are:
 | `"bins"` | Number of channels | Sum consecutive native bins. |
 | `"snr"` | Target S/N | Accumulate bins until the target S/N is reached. |
 | `"resolution"` | Width in keV | Group channels into fixed-width energy intervals without splitting input bins. |
+| `"optimal"` / `"kaastra"` | `None` | Kaastra–Bleeker data binning from the RMF and gross observed counts. Keep `rebin_min_bins=1`. |
+
+Optimal binning implements equations 36–37 and Appendix B.1 of
+[Kaastra & Bleeker (2016)](https://arxiv.org/html/1601.05309#A2.SS1).
+It measures the FWHM and the core-to-total count correction directly from
+the RMF, including response wings. It groups whole native channels, preserves
+the last bin and separates gaps. Channels without a measurable response core
+remain ungrouped; an entirely unusable RMF raises an error. This groups the
+observed data; it does not rewrite the RMF or construct the paper's model grid.
+
+No background file is required. With a background, the groups are chosen from
+the gross source-region counts; scaled background subtraction and uncertainty
+propagation still determine the returned spectrum. Zero-error native channels
+are retained with a one-count variance floor, consistent with the Poisson
+simulations. Each Poisson realization repeats optimal grouping on its own gross
+counts over the full native grid before selecting the search interval.
+
+```python
+spectrum = prepare_spectrum(
+    "source.pha", "response.rmf",
+    rebin_method="optimal",
+)
+
+# The same option is available in find_candidate_lines and BlindLineSearchConfig.
+candidates = find_candidate_lines(
+    "source.pha", "response.rmf",
+    rebin_method="optimal",
+    num_synthetic_simulations=100,
+    synthetic_seed=123,
+)
+```
 
 **Returns**
 
@@ -363,6 +394,9 @@ BlindLineSearchConfig(
     rebin_method="none",
     rebin_scale=None,
     rebin_min_bins=1,
+    n_jobs=1,
+    simulation_batch_size=5,
+    min_relative_prominence=0.05,
 )
 ```
 
@@ -372,12 +406,41 @@ Use this dataclass when the search needs more control than the convenience wrapp
 | --- | --- |
 | `en1`, `en2`, `energy_pad` | Nominal search band and internal padding, in keV. |
 | `num_synthetic_simulations`, `synthetic_seed` | Number and random seed of null realizations. |
+| `n_jobs`, `simulation_batch_size` | Maximum worker processes and simulations per task; both must be positive integers. Defaults: 1 and 5. |
 | `noise_model` | `"poisson"` for science analyses; `"gaussian"` is retained for validation and comparison only. |
 | `rebin_method`, `rebin_scale`, `rebin_min_bins` | Count-space rebinning applied consistently to data and null spectra. |
 | `baseline_window`, `max_range_fraction`, `min_points` | Empirical running-median baseline settings. |
 | `max_sigma_line` | Maximum allowed Gaussian sigma in keV for local and global fits. |
+| `min_relative_prominence` | Retain peaks strictly above this fraction of the largest prominence in their block. Default: 0.05; must be finite and in [0, 1). |
 | `response_feature_threshold` | Robust ARF-sharpness threshold used for `response_feature`. |
 | `final_fit_maxfev` | Maximum number of function evaluations for the optional global fit. |
+
+`min_relative_prominence` selects the starting peaks for local Gaussian fits;
+it is not a statistical significance threshold. Lower values admit weaker
+peaks relative to their block maximum. Observed and null searches use the
+same value, including parallel workers. Changing it requires rerunning the
+null simulations before interpreting the resulting p-values.
+
+For 100 simulations, `n_jobs=2, simulation_batch_size=5` uses at most two
+persistent worker processes with five spectra per task. Each worker limits its
+BLAS/OpenMP pools to one thread, including Apple Accelerate through its startup
+environment setting. Rebinning, baseline estimation and local line
+searches run in the workers; the parent draws the random samples in their
+original order. The same seed therefore produces the same random draws when
+the process count or batch size changes. Numerical fits can still have small
+floating-point differences between platforms or numerical-library versions.
+
+Only a bounded queue of batches is kept in flight, rather than all synthetic
+spectra. Candidate tables are retained for the significance calculation, with
+every simulation counted even if it finds no candidates. Worker errors stop
+the run; failed simulations are never silently excluded. The default
+`n_jobs=1` also processes spectra one at a time. A single batch is handled
+locally to avoid starting workers for too little work.
+
+In a notebook, restart the kernel after updating BLiSS and rerun the imports.
+In a standalone Python script, put the pipeline call inside
+`if __name__ == "__main__":` because worker processes use `spawn`.
+Process startup has a cost, so short runs may be faster with `n_jobs=1`.
 
 ### `BlindLineSearchPipeline.run`
 
@@ -417,6 +480,8 @@ config = BlindLineSearchConfig(
     num_synthetic_simulations=100,
     synthetic_seed=32002,
     noise_model="poisson",
+    n_jobs=2,
+    simulation_batch_size=5,
 )
 
 pipeline = BlindLineSearchPipeline(config)
