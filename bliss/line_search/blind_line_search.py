@@ -21,7 +21,8 @@ from .candidate_regions import (
 )
 from .gaussian_models import n_gaussian, p0_generator_final, gaussian_area_error, validate_sigma_bounds
 from .instrumental_width import fit_with_instrumental_width
-from ..synthetic_probability.synthetic_spectra import generate_null_realizations
+from .progress import SearchProgress
+from ..synthetic_probability.synthetic_spectra import generate_null_realizations, _validate_simulation_count
 from ..synthetic_probability.parallel_search import (
     iter_parallel_null_candidates, validate_parallel_options,
 )
@@ -45,7 +46,7 @@ from ..spectrum_data.rebinning_tools import (
 # Full working schema: retain covariance, fit context and quality diagnostics
 # until all fitting and energy-window selection have finished.
 LINE_OUTPUT_COLUMNS = [
-    'center', 'ecenter', 'sigma', 'esigma', 'width_fixed_instrumental', 'amplitude', 'eamplitude',
+    'center', 'ecenter', 'sigma', 'esigma', 'width_fixed_instrumental', 'width_fixed_three_bin', 'amplitude', 'eamplitude',
     'cov_amplitude_sigma', 'fit_block_width',
     'relative_power', 'noise_on_block',
     'base_on_line', 'snr_peak', 'snr_amplitude', 'area', 'earea',
@@ -57,7 +58,7 @@ CANDIDATE_COLUMNS = LINE_OUTPUT_COLUMNS.copy()
 FINAL_OUTPUT_COLUMNS = [
     'center', 'ecenter',
     'sigma', 'esigma',
-    'width_fixed_instrumental',
+    'width_fixed_instrumental', 'width_fixed_three_bin',
     'amplitude', 'eamplitude',
     'area', 'earea',
     'ew',
@@ -98,6 +99,9 @@ class BlindLineSearchConfig:
     simulation_batch_size : int
         Simulations per worker task, default 5. Both parallel options must
         be positive integers. Changing them preserves the random draws.
+    show_progress : bool, default: True
+        Display the current phase and a simulation progress bar in notebooks
+        and terminals. Remaining time estimates cover simulations only.
     keep_synthetic_candidates : bool, default: False
         Retain the complete null candidate catalogue for inspection. By
         default, each table is reduced to five maxima and then released.
@@ -218,8 +222,11 @@ class BlindLineSearchConfig:
     keep_synthetic_candidates: bool = False
     fit_statistic: str = "auto"
     baseline_context: Optional[tuple[float, float]] = None
+    show_progress: bool = True
 
     def __post_init__(self):
+        if not isinstance(self.show_progress, (bool, np.bool_)):
+            raise ValueError('show_progress must be a boolean.')
         _validate_fit_statistic(self.fit_statistic)
         validate_oversampling(self.oversampling, self.rebin_method)
         validate_sigma_bounds(self.min_sigma_line, self.max_sigma_line)
@@ -682,11 +689,12 @@ def _arf_feature_profile(arf_energy, effective_area):
 def _flag_response_features(lines, spectrum, threshold):
     """Annotate candidates that lie near unusually sharp ARF structure."""
     lines = lines.copy()
-    if 'width_fixed_instrumental' not in lines:
-        lines['width_fixed_instrumental'] = False
-    else:
-        lines['width_fixed_instrumental'] = lines['width_fixed_instrumental'].map(
-            lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
+    for column in ('width_fixed_instrumental', 'width_fixed_three_bin'):
+        if column not in lines:
+            lines[column] = False
+        else:
+            lines[column] = lines[column].map(
+                lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
     lines['response_feature'] = False
     if len(lines) == 0:
         return lines
@@ -739,11 +747,12 @@ def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
     # Filter before infinities are normalized to NaN diagnostics below.
     lines = discard_large_center_errors(lines)
 
-    if 'width_fixed_instrumental' not in lines:
-        lines['width_fixed_instrumental'] = False
-    else:
-        lines['width_fixed_instrumental'] = lines['width_fixed_instrumental'].map(
-            lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
+    for column in ('width_fixed_instrumental', 'width_fixed_three_bin'):
+        if column not in lines:
+            lines[column] = False
+        else:
+            lines[column] = lines[column].map(
+                lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
 
     if len(lines) == 0:
         for col in ['snr_peak', 'snr_amplitude', 'area', 'earea', 'snr_area', 'ew']:
@@ -771,6 +780,7 @@ def _add_candidate_metrics(lines: pd.DataFrame) -> pd.DataFrame:
         lines['amplitude'], lines['sigma'], lines['eamplitude'], lines['esigma'],
         lines['cov_amplitude_sigma'],
         width_fixed_instrumental=lines['width_fixed_instrumental'],
+        width_fixed_three_bin=lines['width_fixed_three_bin'],
     )
     lines['snr_area'] = _safe_divide(lines['area'], lines['earea'])
 
@@ -801,11 +811,14 @@ def final_fit_and_metrics(
     the bin-integrated continuum + lines model. Optional ``ylines`` must
     contain precomputed signed residuals,
     not the positive excess used to locate candidate blocks.
-    All amplitudes, centers and widths are initially free within their bounds.
-    Widths below the instrumental sigma at the fitted center are fixed to that
-    value and remaining parameters are jointly refitted. The output marks
-    these widths with ``width_fixed_instrumental=True`` and ``esigma=NaN``.
-    Their amplitude/center/area errors are conditional on the fixed width.
+    Widths marked ``width_fixed_three_bin=True`` retain their prescribed local
+    values from the first global fit. Other widths, amplitudes and centers are
+    initially free within their bounds. Free widths below the instrumental
+    sigma at the fitted center are fixed to that value and remaining parameters
+    are jointly refitted. ``width_fixed_instrumental=True`` identifies widths
+    set by the instrumental resolution, including three-bin instrumental floors.
+    Both fixed-width cases have ``esigma=NaN``; amplitude/center/area errors are
+    conditional on the fixed width.
     Every amplitude is bounded by the maximum observed bin over the global
     fit interval plus that bin's effective fitting uncertainty. The bin value
     includes the continuum; initial amplitudes are clipped to this interval.
@@ -861,7 +874,13 @@ def _fit_global_with_diagnostics(
     max_sigma_line: float = 0.1,
     min_sigma_line: float = 1e-6,
 ):
-    """Compute the global fit, retaining context until final output selection."""
+    """Compute the global fit, retaining context until final output selection.
+
+    Widths prescribed by the three-bin local rule remain fixed to their saved
+    values. Their errors, including area errors, stay conditional on that
+    assumed width. Other components retain the ordinary instrumental-width
+    fitting procedure. Detection p-values remain those of the local search.
+    """
     validate_sigma_bounds(min_sigma_line, max_sigma_line)
 
     base, ylines = _baseline_and_residuals(
@@ -875,11 +894,12 @@ def _fit_global_with_diagnostics(
 
     # This explicit filter cannot be bypassed by cached fit-quality flags.
     clean_lines = discard_large_center_errors(clean_lines).reset_index(drop=True)
-    if 'width_fixed_instrumental' not in clean_lines:
-        clean_lines['width_fixed_instrumental'] = False
-    else:
-        clean_lines['width_fixed_instrumental'] = clean_lines['width_fixed_instrumental'].map(
-            lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
+    for column in ('width_fixed_instrumental', 'width_fixed_three_bin'):
+        if column not in clean_lines:
+            clean_lines[column] = False
+        else:
+            clean_lines[column] = clean_lines[column].map(
+                lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
     missing_for_fit = sorted({'amplitude', 'center', 'sigma'} - set(clean_lines))
     if len(clean_lines) and missing_for_fit:
         raise ValueError(
@@ -933,6 +953,9 @@ def _fit_global_with_diagnostics(
     invalid = clean_lines['fit_evaluable'].eq(False)
     rejected = clean_lines[invalid].copy()
     clean_lines = clean_lines[~invalid].reset_index(drop=True)
+    three_bin_fixed = clean_lines['width_fixed_three_bin'].to_numpy(dtype=bool)
+    instrumental_fixed = (three_bin_fixed
+                          & clean_lines['width_fixed_instrumental'].to_numpy(dtype=bool))
     # Rejected rows keep their local measurements. Only fill missing metrics
     # for legacy inputs; never recompute compact-table errors without covariance.
     if len(rejected) and missing_metrics:
@@ -987,12 +1010,17 @@ def _fit_global_with_diagnostics(
         )
 
         try:
+            fixed_options = {}
+            if np.any(three_bin_fixed):
+                fixed_options['fixed_sigmas'] = np.where(
+                    three_bin_fixed, clean_lines['sigma'].to_numpy(dtype=float), np.nan)
             popt, pcov, width_fixed = fit_with_instrumental_width(
                 spectrum.energy, ylines, fit_sigma, p0, bounds,
                 response_sigma=spectrum.response_sigma,
                 poisson_data=getattr(spectrum, 'poisson_data', None), baseline=base,
                 maxfev=final_fit_maxfev,
                 gaussian_fit=curve_fit, poisson_fit=fit_poisson_gaussians,
+                **fixed_options,
             )
 
             global_converged = True
@@ -1021,7 +1049,7 @@ def _fit_global_with_diagnostics(
                     ]
                 )
                 fitted_final.loc[k] = new_line
-            fitted_final['width_fixed_instrumental'] = width_fixed
+            instrumental_fixed |= width_fixed
 
         except (RuntimeError, ValueError) as exc:
             global_message = str(exc)
@@ -1029,6 +1057,8 @@ def _fit_global_with_diagnostics(
 
     # Detection p-values refer to the local search and remain unchanged by refitting.
     clean_select = clean_lines[["noise_on_block", "relative_power", *P_VALUE_COLUMNS]].copy()
+    clean_select['width_fixed_instrumental'] = instrumental_fixed
+    clean_select['width_fixed_three_bin'] = three_bin_fixed
     clean_select['fit_block_width'] = clean_lines.get('fit_block_width', np.nan)
     clean_select['fit_center_initial'] = clean_lines['center'].to_numpy()
 
@@ -1073,6 +1103,7 @@ def _fit_global_with_diagnostics(
         result["amplitude"], result["sigma"], result["eamplitude"], result["esigma"],
         result["cov_amplitude_sigma"],
         width_fixed_instrumental=result.get('width_fixed_instrumental', False),
+        width_fixed_three_bin=result.get('width_fixed_three_bin', False),
     )
 
     result["snr_area"] = _safe_divide(
@@ -1477,6 +1508,7 @@ class BlindLineSearchPipeline:
         output_dir=None,
         plot_name: str = 'bliss_fit.png',
         overwrite: bool = False,
+        show_progress: Optional[bool] = None,
     ) -> pd.DataFrame:
         """Execute the BLiSS workflow on a PHA spectrum.
 
@@ -1499,7 +1531,27 @@ class BlindLineSearchPipeline:
         Automatic output folders are exclusive. With an explicit output_dir,
         existing destinations raise FileExistsError unless overwrite=True;
         files not written by this call are left alone.
+        show_progress=None inherits the config (True by default). The display
+        reports preparation stages and actual completed simulations; its ETA
+        covers the simulation phase only. False suppresses the display.
         """
+
+        enabled = self.config.show_progress if show_progress is None else show_progress
+        if not isinstance(enabled, (bool, np.bool_)):
+            raise ValueError('show_progress must be a boolean.')
+        with SearchProgress(enabled=bool(enabled)) as progress:
+            return self._run(
+                pha, rmf, arf, bkg, en1=en1, en2=en2, energy_pad=energy_pad,
+                final_fit=final_fit, show_plot=show_plot, output_dir=output_dir,
+                plot_name=plot_name, overwrite=overwrite, progress=progress,
+            )
+
+    def _run(
+        self, pha, rmf, arf=None, bkg=None, *, en1=None, en2=None,
+        energy_pad=None, final_fit=False, show_plot=False, output_dir=None,
+        plot_name='bliss_fit.png', overwrite=False, progress,
+    ) -> pd.DataFrame:
+        """Execute the scientific workflow under the caller's progress context."""
 
         # Do not retain diagnostic catalogues from a previous run or expose
         # partial null maxima after a failed simulation/reduction.
@@ -1538,6 +1590,7 @@ class BlindLineSearchPipeline:
         # ------------------------------------------------------------
         # Load and group the complete working band (science + context)
         # ------------------------------------------------------------
+        progress.phase('Preparing spectrum and response')
         spectrum_full = prepare_spectrum(
             pha, rmf, arf, bkg,
             energy_range=context,
@@ -1571,6 +1624,7 @@ class BlindLineSearchPipeline:
         # ------------------------------------------------------------
         # Baseline from the complete bounded working spectrum
         # ------------------------------------------------------------
+        progress.phase('Estimating continuum')
         base_full, baseline_info = _spectrum_baseline(
             spectrum_full,
             baseline_window=self.config.baseline_window,
@@ -1598,6 +1652,7 @@ class BlindLineSearchPipeline:
         # Raw candidate detection and first local Gaussian fits
         # inside the padded interval
         # ------------------------------------------------------------
+        progress.phase('Fitting observed candidates')
         raw_candidates = return_raw_lines(
             spectrum.energy,
             spectrum.values,
@@ -1615,6 +1670,8 @@ class BlindLineSearchPipeline:
         # Null realizations: same rebinning, baseline and detection
         # chain as the data, one candidate table per realization
         # ------------------------------------------------------------
+        progress.start_simulations(_validate_simulation_count(self.config.num_synthetic_simulations))
+
         def serial_candidates():
             null_realizations = generate_null_realizations(
                 spectrum_full, base_full, fit_en1, fit_en2, self.config,
@@ -1632,6 +1689,7 @@ class BlindLineSearchPipeline:
                         **_poisson_fit_options(null),
                     )
                     cand["sim"] = k
+                    progress.advance(1)
                     yield cand
             finally:
                 close = getattr(null_realizations, 'close', None)
@@ -1642,6 +1700,7 @@ class BlindLineSearchPipeline:
             iter_parallel_null_candidates(
                 spectrum_full, base_full, fit_en1, fit_en2, self.config,
                 window_width=initial_window_width,
+                progress_callback=progress.advance if progress.enabled else None,
             ) if self.config.n_jobs > 1 else serial_candidates()
         )
         retained_tables = [] if self.config.keep_synthetic_candidates else None
@@ -1676,6 +1735,7 @@ class BlindLineSearchPipeline:
         # ------------------------------------------------------------
         # Final catalogue restricted to the nominal science window
         # ------------------------------------------------------------
+        progress.phase('Calculating p-values')
         selected = self._select_candidates(
             raw_candidates,
             en1=en1_use,
@@ -1694,6 +1754,7 @@ class BlindLineSearchPipeline:
             )
 
         if not final_fit:
+            progress.phase('Saving results')
             result = selected.reindex(columns=FINAL_OUTPUT_COLUMNS).copy()
             with _reserve_output_paths(output_paths, overwrite=overwrite):
                 if show_plot:
@@ -1714,6 +1775,7 @@ class BlindLineSearchPipeline:
         # Optional global fit over the padded interval,
         # but only for candidates whose centroids are inside en1--en2
         # ------------------------------------------------------------
+        progress.phase('Global fit')
         result, yfit = _fit_global_with_diagnostics(
             spectrum=spectrum,
             base=base,
@@ -1734,6 +1796,7 @@ class BlindLineSearchPipeline:
         )
 
         result = result.reindex(columns=FINAL_OUTPUT_COLUMNS).copy()
+        progress.phase('Saving results')
         with _reserve_output_paths(output_paths, overwrite=overwrite):
             # The nested writers may fill the files reserved by this run.
             if show_plot:
@@ -1824,6 +1887,7 @@ def _build_config(
     config, en1, en2, energy_pad, rebin_method, rebin_scale, rebin_min_bins,
     num_synthetic_simulations, synthetic_seed, oversampling=_UNSET,
     assume_poisson_rate_errors=None, fit_statistic=None, baseline_context=_UNSET,
+    show_progress=None,
 ):
     if config is None:
         config = BlindLineSearchConfig()
@@ -1836,6 +1900,7 @@ def _build_config(
         num_synthetic_simulations=num_synthetic_simulations,
         assume_poisson_rate_errors=assume_poisson_rate_errors,
         fit_statistic=fit_statistic,
+        show_progress=show_progress,
     )
     overrides = {key: value for key, value in overrides.items() if value is not None}
     for key, value in dict(
@@ -1871,6 +1936,7 @@ def find_candidate_lines(
     fit_statistic=None,
     baseline_context=_UNSET,
     overwrite: bool = False,
+    show_progress: Optional[bool] = None,
 ):
     """Run BLiSS candidate detection, p-value estimation and an optional global fit.
     
@@ -1928,6 +1994,11 @@ def find_candidate_lines(
         fitted multi-Gaussian model when final_fit=True.
     plot_name : str, default: 'bliss_fit.png'
         Diagnostic image name inside output_dir when show_plot=True.
+    show_progress : bool or None, default: None
+        Display phases, completed/total simulations, remaining simulations and
+        estimated time remaining. None inherits config.show_progress (True by
+        default). False disables progress output. Estimates cover simulations,
+        not initial spectrum preparation or the optional global fit.
     overwrite : bool, default: False
         Allow replacement of this call's existing output files in output_dir.
         Otherwise a collision raises FileExistsError before the search.
@@ -1942,7 +2013,7 @@ def find_candidate_lines(
     config = _build_config(
         config, en1, en2, energy_pad, rebin_method, rebin_scale, rebin_min_bins,
         num_synthetic_simulations, synthetic_seed, oversampling,
-        assume_poisson_rate_errors, fit_statistic, baseline_context,
+        assume_poisson_rate_errors, fit_statistic, baseline_context, show_progress,
     )
     pipeline = BlindLineSearchPipeline(config=config)
     return pipeline.run(

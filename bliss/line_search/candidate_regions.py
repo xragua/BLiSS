@@ -113,7 +113,7 @@ def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None, *, pois
     """Split non-zero line excesses into contiguous candidate blocks.
 
     Blocks are maximal runs of non-zero bins in ``ylines``, extended by up to
-    two observed bins on each side to anchor the Gaussian wings. Padding stops
+    one observed bin on each side to anchor the Gaussian wings. Padding stops
     before another non-zero run or the edge of the grid. Neighboring blocks
     may share zero-excess padding bins, but never include each other's excess.
     The final run of the interval is included.
@@ -158,8 +158,8 @@ def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None, *, pois
         # Keep the added context outside neighboring candidate excesses.
         left_limit = int(run_ends[i - 1]) + 1 if i > 0 else 0
         right_limit = int(run_starts[i + 1]) - 1 if i + 1 < len(run_starts) else last
-        lo = max(int(lo_nz) - 2, left_limit)
-        hi = min(int(hi_nz) + 2, right_limit)
+        lo = max(int(lo_nz) - 1, left_limit)
+        hi = min(int(hi_nz) + 1, right_limit)
         sl = slice(lo, hi + 1)
         blocks.append(
             CandidateBlock(
@@ -190,12 +190,21 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
     The local separation scale is
     ``max(min_peak_separation, sigma_inst(E))`` when the instrumental
     ``response_sigma`` is available, and ``min_peak_separation`` otherwise.
-    The number of Gaussians is capped at ``floor(n_bins / 4)``, keeping the
-    most prominent peaks. Local Gaussian-likelihood fits use the signed
+    At least three bins are required. Three-bin blocks fit one Gaussian with
+    sigma fixed before the first fit to the larger of one sixth of the block
+    span (between outer bin centers) and valid instrumental sigma at the
+    initial peak. Only amplitude and center are free. This assumed width is
+    recorded by ``width_fixed_three_bin``; ``width_fixed_instrumental`` is
+    also true when the instrumental width sets that value. Configured width
+    bounds are still enforced; an incompatible fixed width fails explicitly.
+    Larger blocks retain the cap ``max(1, floor(n_bins / 4))``, keeping the
+    most prominent peaks. Attempting a fit does not guarantee evaluable errors.
+    Local Gaussian-likelihood fits use the signed
     baseline-subtracted residual of the block, weighted by the supplied
     one-sigma observational uncertainties. Their absolute scale is retained
     in the covariance; the empirical baseline is treated as fixed. Amplitude,
-    center and sigma initially remain free within their bounds. Widths below
+    center and, for larger blocks, sigma initially remain free within their
+    bounds. Widths below
     the instrumental sigma at the fitted center are then fixed to that value
     and the remaining parameters are jointly refitted. Fixed-width errors
     are NaN; amplitude/center errors are conditional on that assumed width.
@@ -244,7 +253,7 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
     noise_on_block = np.mean(block.uncertainties)
     sep_floor = (DEFAULT_MIN_PEAK_SEPARATION if min_peak_separation is None
                  else float(min_peak_separation))
-    if len(block.values) > 3 and max(block.values) > 0:
+    if len(block.values) >= 3 and max(block.values) > 0:
         peaks = find_peaks_new(block.energy, block.values)
         if len(peaks) > 0:
             good_list = []
@@ -271,6 +280,8 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
             max_peaks = int(np.floor(len(block.energy) / 4))
             good_peaks = good_peaks[0:max(1, max_peaks)]
             if len(good_peaks) > 0:
+                width_fixed_three_bin = len(block.values) == 3
+                initial_instrumental_fixed = np.zeros(len(good_peaks), dtype=bool)
                 fit_sigma = np.asarray(block.uncertainties, dtype=float)
                 valid_sigma = (fit_sigma.shape == np.shape(block.values)
                                and np.all(np.isfinite(fit_sigma) &
@@ -292,12 +303,25 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
                     if not valid_sigma or fit_sigma.shape != target.shape:
                         raise ValueError("Local fit requires finite positive uncertainties "
                                          "for every fitted bin.")
+                    fixed_options = {}
+                    if width_fixed_three_bin:
+                        fixed_sigmas = np.full(len(good_peaks), float(np.ptp(block.energy)) / 6.)
+                        if block.response_sigma is not None:
+                            instrumental = np.interp(
+                                np.asarray(p0)[1::3], block.energy, block.response_sigma)
+                            initial_instrumental_fixed = (
+                                np.isfinite(instrumental) & (instrumental > 0)
+                                & (instrumental >= fixed_sigmas))
+                            fixed_sigmas[initial_instrumental_fixed] = instrumental[initial_instrumental_fixed]
+                        fixed_options['fixed_sigmas'] = fixed_sigmas
                     popt, pcov, width_fixed = fit_with_instrumental_width(
                         block.energy, target, fit_sigma, p0, bounds,
                         response_sigma=block.response_sigma,
                         poisson_data=block.poisson_data, baseline=block.baseline,
                         gaussian_fit=curve_fit, poisson_fit=fit_poisson_gaussians,
+                        **fixed_options,
                     )
+                    width_fixed = width_fixed | initial_instrumental_fixed
                     if block.poisson_data is not None:
                         noise_on_block = float(np.mean(poisson_model_uncertainty(
                             block.energy, block.baseline, block.poisson_data, popt)))
@@ -319,6 +343,7 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
                                      'eamplitude': eamplitude,
                                      'ecenter': ecenter,
                                      'esigma': esigma,
+                                     'width_fixed_three_bin': width_fixed_three_bin,
                                      'width_fixed_instrumental': bool(width_fixed[k]),
                                      'cov_amplitude_sigma': pcov[3*k, 3*k + 2],
                                      'noise_on_block': noise_on_block})
@@ -332,7 +357,8 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
                             fit_center_initial=good_peaks.energy.iloc[k],
                             amplitude=np.nan, sigma=np.nan, eamplitude=np.nan,
                             ecenter=np.nan, esigma=np.nan,
-                            width_fixed_instrumental=False,
+                            width_fixed_three_bin=width_fixed_three_bin,
+                            width_fixed_instrumental=bool(initial_instrumental_fixed[k]),
                             cov_amplitude_sigma=np.nan,
                             noise_on_block=noise_on_block,
                             fit_converged=False,
@@ -446,6 +472,7 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
     fitted = pd.DataFrame(rows, columns=['amplitude', 'center', 'sigma',
                                          'eamplitude', 'ecenter', 'esigma',
                                          'width_fixed_instrumental',
+                                         'width_fixed_three_bin',
                                          'cov_amplitude_sigma',
                                          'noise_on_block',
                                          'fit_converged', 'fit_message',

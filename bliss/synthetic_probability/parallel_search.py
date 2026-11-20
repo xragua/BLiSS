@@ -52,6 +52,15 @@ def _submit_batch(pool, batch):
         return pool.submit(_search_batch, batch)
 
 
+def _notify_progress(callback, completed):
+    """Keep optional presentation failures separate from scientific results."""
+    if callback is not None:
+        try:
+            callback(completed)
+        except Exception:
+            pass
+
+
 def validate_parallel_options(n_jobs, batch_size):
     for name, value in (("n_jobs", n_jobs), ("simulation_batch_size", batch_size)):
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral) or value < 1:
@@ -97,11 +106,19 @@ def _search_batch(batch):
 
 
 def iter_parallel_null_candidates(spectrum_full, base_full, fit_en1, fit_en2,
-                                  config, *, window_width=None):
-    """Yield ordered null candidate tables with bounded parallel batches."""
+                                  config, *, window_width=None, progress_callback=None):
+    """Yield ordered null candidate tables with bounded parallel batches.
+
+    ``progress_callback(increment)`` optionally reports successfully completed
+    simulations. Parallel updates count completed batches, independently of
+    result ordering. The callback stays in the parent and may run in its
+    executor management thread; it is never sent to a spawned worker.
+    Ordinary callback exceptions do not affect results or worker errors.
+    """
     yield from _iter_parallel_null_results(
         spectrum_full, base_full, fit_en1, fit_en2, config,
         window_width=window_width, search_lines=True,
+        progress_callback=progress_callback,
     )
 
 
@@ -116,7 +133,7 @@ def iter_parallel_null_realizations(spectrum_full, base_full, fit_en1, fit_en2,
 
 def _iter_parallel_null_results(spectrum_full, base_full, fit_en1, fit_en2,
                                 config, *, noise_model=None, window_width=None,
-                                search_lines=True):
+                                search_lines=True, progress_callback=None):
     """Yield one spectrum or candidate table per simulation, including empty searches.
 
     Draws are made in simulation order in the parent to retain the serial RNG
@@ -139,9 +156,11 @@ def _iter_parallel_null_results(spectrum_full, base_full, fit_en1, fit_en2,
     workers = min(int(config.n_jobs), (n_sim + batch_size - 1) // batch_size)
     if workers == 1:
         for sim in range(n_sim):
-            yield _search_sample(context, config.max_sigma_line, sim,
-                                 _draw_null_sample(context, rng), search_lines,
-                                 config.min_relative_prominence, config.min_sigma_line)
+            table = _search_sample(context, config.max_sigma_line, sim,
+                                   _draw_null_sample(context, rng), search_lines,
+                                   config.min_relative_prominence, config.min_sigma_line)
+            _notify_progress(progress_callback, 1)
+            yield table
         return
 
     def batches():
@@ -156,18 +175,31 @@ def _iter_parallel_null_results(spectrum_full, base_full, fit_en1, fit_en2,
         initargs=(context, config.max_sigma_line, search_lines,
                   config.min_relative_prominence, config.min_sigma_line),
     )
+
+    def submit(batch):
+        future = _submit_batch(pool, batch)
+        if progress_callback is not None:
+            count = len(batch)
+
+            def completed(done):
+                if not done.cancelled() and done.exception() is None:
+                    _notify_progress(progress_callback, count)
+
+            future.add_done_callback(completed)
+        return future
+
     try:
         remaining = iter(batches())
         for _ in range(2 * workers):
             batch = next(remaining, None)
             if batch is None:
                 break
-            pending.append(_submit_batch(pool, batch))
+            pending.append(submit(batch))
         while pending:
             tables = pending.popleft().result()
             batch = next(remaining, None)
             if batch is not None:
-                pending.append(_submit_batch(pool, batch))
+                pending.append(submit(batch))
             yield from tables
     finally:
         # Also handles an interrupted notebook cell or a failed fit. Running

@@ -10,10 +10,15 @@ from .poisson_fitting import fit_poisson_gaussians
 
 def fit_with_instrumental_width(
     energy, target, uncertainties, p0, bounds, *, response_sigma=None,
-    poisson_data=None, baseline=None, maxfev=100000,
+    poisson_data=None, baseline=None, maxfev=100000, fixed_sigmas=None,
     gaussian_fit=curve_fit, poisson_fit=fit_poisson_gaussians,
 ):
-    """Fit all parameters, then fix widths narrower than instrumental sigma.
+    """Fit free parameters, then fix widths narrower than instrumental sigma.
+
+    ``fixed_sigmas`` optionally supplies one width per component: NaN leaves
+    that width free, and a finite positive value fixes it before the first
+    fit. Supplied widths are never reopened or changed after a center moves.
+    They must lie within the effective width bounds; no clipping is applied.
 
     A fixed width uses the instrumental sigma interpolated at the center of
     the fit that first triggered the rule. That numerical value stays fixed
@@ -22,11 +27,14 @@ def fit_with_instrumental_width(
     is applied to that component too; already fixed widths are not reopened.
 
     Returns full Gaussian parameters, full covariance, and one boolean per
-    component indicating a fixed instrumental width. Fixed-width covariance
+    component indicating a width automatically fixed to the instrumental
+    resolution during this call (not a width supplied in ``fixed_sigmas``).
+    Fixed-width covariance
     rows/columns are NaN: uncertainties on remaining parameters are conditional
-    on the adopted width. No resolution estimate leaves the ordinary free fit
-    unchanged. An upper width bound below the valid instrumental sigma is
-    raised to three times that sigma before the free fit. If a fitted center
+    on the adopted width. Without supplied widths or a resolution estimate,
+    the ordinary free fit is unchanged. An upper width bound below the valid
+    instrumental sigma is raised to three times that sigma before fitting.
+    If a fitted center
     requires a larger cap, the free fit is repeated with that relaxed cap
     before deciding which widths to fix. Lower bounds are unchanged.
     """
@@ -44,6 +52,21 @@ def fit_with_instrumental_width(
     if response is not None:
         upper[2::3] = _instrumental_sigma_upper_bound(
             upper[2::3], np.interp(parameters[1::3], energy, response))
+    if fixed_sigmas is not None:
+        supplied = np.asarray(fixed_sigmas, dtype=float)
+        if (supplied.shape != width_fixed.shape or np.any(np.isinf(supplied))
+                or np.any(np.isfinite(supplied) & (supplied <= 0))):
+            raise ValueError(
+                'fixed_sigmas must contain one positive finite width or NaN '
+                'per Gaussian component.')
+        supplied_indices = 3 * np.flatnonzero(np.isfinite(supplied)) + 2
+        values = supplied[np.isfinite(supplied)]
+        if np.any((values < lower[supplied_indices]) | (values > upper[supplied_indices])):
+            raise ValueError(
+                'Supplied fixed sigma lies outside the configured width bounds; '
+                'cannot apply the requested fixed-width model.')
+        fixed[supplied_indices] = values
+        parameters[supplied_indices] = values
 
     def fit(current):
         free = np.isnan(fixed)
@@ -82,11 +105,12 @@ def fit_with_instrumental_width(
             return parameters, covariance, width_fixed
         instrumental = np.interp(parameters[1::3], energy, response)
         relaxed = _instrumental_sigma_upper_bound(upper[2::3], instrumental)
-        expand = ~width_fixed & (relaxed > upper[2::3])
+        free_widths = np.isnan(fixed[2::3])
+        expand = free_widths & (relaxed > upper[2::3])
         if np.any(expand):
             upper[3 * np.flatnonzero(expand) + 2] = relaxed[expand]
             continue
-        newly_fixed = (~width_fixed & np.isfinite(instrumental) & (instrumental > 0)
+        newly_fixed = (free_widths & np.isfinite(instrumental) & (instrumental > 0)
                        & (parameters[2::3] < instrumental))
         if not np.any(newly_fixed):
             return parameters, covariance, width_fixed

@@ -67,7 +67,8 @@ def n_gaussian(x, *params):
 
 
 def gaussian_area_error(amplitude, sigma, eamplitude, esigma,
-                        cov_amplitude_sigma, *, width_fixed_instrumental=False):
+                        cov_amplitude_sigma, *, width_fixed_instrumental=False,
+                        width_fixed_three_bin=False):
     """Propagate the full amplitude/width covariance to Gaussian area.
     For area = sqrt(2*pi) * amplitude * sigma, the first-order variance is
     2*pi * (sigma**2 * eamplitude**2 + amplitude**2 * esigma**2
@@ -77,19 +78,23 @@ def gaussian_area_error(amplitude, sigma, eamplitude, esigma,
     covariance is never interpreted as zero. This is a local linear error
     estimate, not a calibrated detection significance.
 
-    With an explicitly true ``width_fixed_instrumental`` flag, sigma is a
-    fixed model value, not an estimated parameter. Its conditional area error
-    is sqrt(2*pi) * sigma * eamplitude; esigma and its covariance are unused.
-    This does not include uncertainty in the instrumental response.
+    With either ``width_fixed_instrumental`` or ``width_fixed_three_bin``
+    explicitly boolean True, sigma is a fixed model value, not an estimated
+    parameter. Its conditional area error is sqrt(2*pi) * sigma * eamplitude;
+    esigma and its covariance are unused. This does not include uncertainty
+    in the instrumental response or the width adopted for a three-bin fit.
     """
-    flags = np.asarray(width_fixed_instrumental, dtype=object)
-    fixed = np.fromiter(
-        (isinstance(flag, (bool, np.bool_)) and bool(flag) for flag in flags.flat),
-        dtype=bool, count=flags.size,
-    ).reshape(flags.shape)
-    amp, width, ea, ew, cov, fixed = np.broadcast_arrays(*[
+    fixed_flags = []
+    for values in (width_fixed_instrumental, width_fixed_three_bin):
+        flags = np.asarray(values, dtype=object)
+        fixed_flags.append(np.fromiter(
+            (isinstance(flag, (bool, np.bool_)) and bool(flag) for flag in flags.flat),
+            dtype=bool, count=flags.size,
+        ).reshape(flags.shape))
+    amp, width, ea, ew, cov, instrumental_fixed, three_bin_fixed = np.broadcast_arrays(*[
         np.asarray(v, dtype=float) for v in
-        (amplitude, sigma, eamplitude, esigma, cov_amplitude_sigma)], fixed)
+        (amplitude, sigma, eamplitude, esigma, cov_amplitude_sigma)], *fixed_flags)
+    fixed = instrumental_fixed | three_bin_fixed
     with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
         rho = (cov / ea) / ew
         valid = (np.isfinite(amp) & np.isfinite(width)

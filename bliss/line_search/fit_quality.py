@@ -34,8 +34,9 @@ def annotate_fit_quality(lines):
     Centroid errors > 1 keV are ineligible, including when cached quality
     flags are stale. Amplitude and width errors have no upper cut. Missing
     convergence metadata is unknown, not a recorded success.
-    Width errors are inapplicable only for an explicit boolean
-    width_fixed_instrumental=True; other parameter checks still apply.
+    Width errors are inapplicable only when width_fixed_instrumental or
+    width_fixed_three_bin is explicitly boolean True. Other parameter
+    checks still apply, including when both width flags are true.
     """
     result = lines.copy()
     for col in ['fit_converged', 'fit_block_id', 'fit_center_initial']:
@@ -43,12 +44,14 @@ def annotate_fit_quality(lines):
             result[col] = np.nan
     if 'fit_message' not in result:
         result['fit_message'] = ''
-    if 'width_fixed_instrumental' not in result:
-        result['width_fixed_instrumental'] = False
-    else:
-        result['width_fixed_instrumental'] = result['width_fixed_instrumental'].map(
-            lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
-    width_fixed = result['width_fixed_instrumental'].to_numpy(dtype=bool)
+    for column in ('width_fixed_instrumental', 'width_fixed_three_bin'):
+        if column not in result:
+            result[column] = False
+        else:
+            result[column] = result[column].map(
+                lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
+    width_fixed = (result['width_fixed_instrumental'].to_numpy(dtype=bool)
+                   | result['width_fixed_three_bin'].to_numpy(dtype=bool))
     reasons = [[] for _ in range(len(result))]
     invalid = np.zeros(len(result), dtype=bool)
 
