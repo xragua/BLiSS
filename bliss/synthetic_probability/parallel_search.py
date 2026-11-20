@@ -59,25 +59,30 @@ def validate_parallel_options(n_jobs, batch_size):
 
 
 def _search_sample(context, max_sigma_line, sim, sample, search_lines=True,
-                   min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
+                   min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE, min_sigma_line=1e-6):
     null = _finish_null_sample(context, sample)
     if not search_lines:
         return null
+    poisson_data = getattr(null, 'poisson_data', None)
+    fit_options = {} if poisson_data is None else dict(poisson_data=poisson_data)
     candidates = return_raw_lines(
         null.energy, null.values, null.uncertainties, null.ylines, null.baseline,
         response_sigma=null.response_sigma, max_sigma_line=max_sigma_line,
+        min_sigma_line=min_sigma_line,
         min_relative_prominence=min_relative_prominence,
+        **fit_options,
     )
     candidates["sim"] = sim
     return candidates
 
 
 def _initialize_worker(context, max_sigma_line, search_lines=True,
-                       min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
+                       min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE, min_sigma_line=1e-6):
     global _worker_context, _worker_max_sigma, _worker_thread_limit, _worker_search_lines
-    global _worker_min_relative_prominence
+    global _worker_min_relative_prominence, _worker_min_sigma
     _worker_context = context
     _worker_max_sigma = max_sigma_line
+    _worker_min_sigma = min_sigma_line
     _worker_search_lines = search_lines
     _worker_min_relative_prominence = min_relative_prominence
     # Keep the controller alive for the worker's lifetime. It limits native
@@ -87,7 +92,7 @@ def _initialize_worker(context, max_sigma_line, search_lines=True,
 
 def _search_batch(batch):
     return [_search_sample(_worker_context, _worker_max_sigma, sim, sample,
-                           _worker_search_lines, _worker_min_relative_prominence)
+                           _worker_search_lines, _worker_min_relative_prominence, _worker_min_sigma)
             for sim, sample in batch]
 
 
@@ -136,7 +141,7 @@ def _iter_parallel_null_results(spectrum_full, base_full, fit_en1, fit_en2,
         for sim in range(n_sim):
             yield _search_sample(context, config.max_sigma_line, sim,
                                  _draw_null_sample(context, rng), search_lines,
-                                 config.min_relative_prominence)
+                                 config.min_relative_prominence, config.min_sigma_line)
         return
 
     def batches():
@@ -149,7 +154,7 @@ def _iter_parallel_null_results(spectrum_full, base_full, fit_en1, fit_en2,
         max_workers=workers, mp_context=get_context("spawn"),
         initializer=_initialize_worker,
         initargs=(context, config.max_sigma_line, search_lines,
-                  config.min_relative_prominence),
+                  config.min_relative_prominence, config.min_sigma_line),
     )
     try:
         remaining = iter(batches())

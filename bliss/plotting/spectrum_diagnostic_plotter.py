@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
+from .run_output_manager import _check_output_paths, _reserve_output_paths, _plot_output_path
 
-def plot_final_bliss_fit(energy: np.ndarray, values: np.ndarray, uncertainties: np.ndarray, baseline: np.ndarray, line_model: np.ndarray, output_path: str | Path):
+def plot_final_bliss_fit(energy: np.ndarray, values: np.ndarray, uncertainties: np.ndarray, baseline: np.ndarray, line_model: np.ndarray, output_path: str | Path, *, overwrite: bool=False):
     """Save a diagnostic plot of the data, baseline, and fitted line model.
 
     Parameters
@@ -21,8 +22,11 @@ def plot_final_bliss_fit(energy: np.ndarray, values: np.ndarray, uncertainties: 
         Fitted line-only model evaluated on ``energy``.
     output_path : str or pathlib.Path
         Destination image path.
+    overwrite : bool, default: False
+        Allow replacement of an existing image. Otherwise raise FileExistsError.
     """
-    output_path = Path(output_path)
+    output_path = _plot_output_path(output_path)
+    _check_output_paths([output_path], overwrite=overwrite)
     plt.figure(figsize=(10, 5))
     plt.errorbar(energy, values, yerr=uncertainties, fmt='-', alpha=0.2, label='Data')
     plt.plot(energy, baseline, 'k:', linewidth=2, label='Base')
@@ -32,5 +36,8 @@ def plot_final_bliss_fit(energy: np.ndarray, values: np.ndarray, uncertainties: 
     plt.ylabel('Spectral value')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
+    try:
+        with _reserve_output_paths([output_path], overwrite=overwrite):
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    finally:
+        plt.close()

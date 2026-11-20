@@ -9,7 +9,9 @@ from numbers import Integral
 import numpy as np
 import pandas as pd
 
-from ..line_search.fit_quality import annotate_fit_quality
+from ..line_search.fit_quality import (
+    annotate_fit_quality, center_error_exceeds_limit, discard_large_center_errors,
+)
 
 
 LOOK_ELSEWHERE_STATISTICS = ('area', 'snr_area', 'snr_peak', 'ew', 'relative_power')
@@ -38,6 +40,8 @@ def simulation_maxima(candidates, n_sim, columns):
         raise ValueError('sim identifiers must be integers in [0, n_sim).')
     statistics = candidates[list(columns)].apply(pd.to_numeric, errors='coerce')
     statistics = statistics.where(np.isfinite(statistics))
+    if 'ecenter' in candidates:
+        statistics.loc[center_error_exceeds_limit(candidates['ecenter']), :] = np.nan
     statistics['sim'] = sim.astype(int)
     return statistics.groupby('sim')[list(columns)].max().reindex(index)
 
@@ -63,43 +67,89 @@ def monte_carlo_pvalues(values, maxima):
     return counts, pvalues
 
 
+def _eligible_statistics(table, *, en1, en2):
+    """Mask local statistics using the same numerical and band rules everywhere."""
+    if not np.isfinite([en1, en2]).all() or en2 <= en1:
+        raise ValueError('Require finite energy limits with en2 > en1.')
+    statistics = table.reindex(columns=LOOK_ELSEWHERE_STATISTICS).apply(
+        pd.to_numeric, errors='coerce').astype(float)
+    if table.empty:
+        return statistics
+    quality = annotate_fit_quality(table)
+    eligible = (quality['fit_converged'].eq(True) & quality['fit_evaluable']
+                & pd.to_numeric(table['center'], errors='coerce').between(en1, en2))
+    return statistics.where(np.isfinite(statistics)).where(eligible, axis=0)
+
+
+def single_simulation_maxima(candidates, *, en1, en2):
+    """Reduce one completed null search to five eligible maxima.
+
+    Metrics must already have been calculated from the local fits. A missing
+    statistic, empty search or entirely non-evaluable search gives NaN for the
+    corresponding maximum. The caller must retain this row in the total N.
+    Finite negative statistics remain comparable and are not replaced by zero.
+    """
+    if candidates is None:
+        raise ValueError('Missing synthetic catalogue is not an empty null search.')
+    statistics = _eligible_statistics(candidates, en1=en1, en2=en2)
+    return statistics.max(axis=0, skipna=True).astype(float)
+
+
+def calculate_look_elsewhere_pvalues_from_maxima(lines, maxima, *, en1, en2):
+    """Return local candidates with p-values from one maximum row per null.
+
+    Maxima must already use the same eligibility rules and energy interval as
+    the observed candidates. All rows count toward N, including all-NaN rows;
+    omitting an empty or non-evaluable simulation would change the p-values.
+    Values must be finite or NaN. Neither input table is modified.
+    """
+    lines = discard_large_center_errors(lines)
+    observed = _eligible_statistics(lines, en1=en1, en2=en2)
+    if not isinstance(maxima, pd.DataFrame):
+        raise ValueError('Null maxima must be a DataFrame with one row per simulation.')
+    missing = sorted(set(LOOK_ELSEWHERE_STATISTICS) - set(maxima.columns))
+    if missing:
+        raise ValueError(f'Null maxima are missing statistic columns: {missing}')
+    if not maxima.columns.is_unique:
+        raise ValueError('Null maxima must have unique statistic columns.')
+    try:
+        numeric_maxima = maxima[list(LOOK_ELSEWHERE_STATISTICS)].apply(
+            pd.to_numeric, errors='raise').astype(float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('Null maxima must contain only finite numeric values or NaN.') from exc
+    if np.isinf(numeric_maxima.to_numpy()).any():
+        raise ValueError('Null maxima must contain only finite numeric values or NaN.')
+
+    result = lines.copy()
+    for column in LOOK_ELSEWHERE_STATISTICS:
+        _, result[f'p_global_{column}'] = monte_carlo_pvalues(
+            observed[column].to_numpy(), numeric_maxima[column].to_numpy())
+    return result
+
+
 def calculate_look_elsewhere_pvalues(lines, synthetic_candidates, n_sim, *, en1, en2):
     """Return the local catalogue with five p-values and the N-by-5 null maxima.
 
     Both inputs contain metrics from local fits. Eligibility requires a
     recorded converged, evaluable fit and a centroid inside [en1, en2].
     Each statistic must be finite; no S/N or area threshold is applied.
-    A missing statistic only
-    prevents evaluation of its own p-value.
+    A missing statistic only prevents evaluation of its own p-value.
 
     Fit quality is recomputed for the eligibility masks.
-    Original rows, measurements and flags are kept.
+    Rows with ecenter > 1 keV are discarded; other measurements and flags are kept.
+    This full-catalogue entry point uses the same eligibility and comparison
+    as incremental reduction.
     """
     if not np.isfinite([en1, en2]).all() or en2 <= en1:
         raise ValueError('Require finite energy limits with en2 > en1.')
     if synthetic_candidates is None:
         raise ValueError('Missing synthetic catalogue is not an empty null search.')
 
-    # 1. Apply the same fit and band rules to observed and synthetic candidates.
-    def eligible_statistics(table):
-        quality = annotate_fit_quality(table)
-        eligible = (quality['fit_converged'].eq(True) & quality['fit_evaluable']
-                    & pd.to_numeric(table['center'], errors='coerce').between(en1, en2))
-        statistics = table.reindex(columns=LOOK_ELSEWHERE_STATISTICS).apply(
-            pd.to_numeric, errors='coerce').astype(float)
-        return statistics.where(np.isfinite(statistics)).where(eligible, axis=0)
-
-    observed = eligible_statistics(lines)
-    synthetic = eligible_statistics(synthetic_candidates)
+    synthetic = _eligible_statistics(synthetic_candidates, en1=en1, en2=en2)
     if 'sim' in synthetic_candidates:
         synthetic['sim'] = synthetic_candidates['sim']
-
-    # 2. Reduce all five statistics in a single grouping, retaining all N searches.
     maxima = simulation_maxima(synthetic, n_sim, LOOK_ELSEWHERE_STATISTICS)
-
-    # 3. Compare each observed statistic with its corresponding null maxima.
-    result = lines.copy()
-    for column in LOOK_ELSEWHERE_STATISTICS:
-        _, result[f'p_global_{column}'] = monte_carlo_pvalues(
-            observed[column].to_numpy(), maxima[column].to_numpy())
+    result = calculate_look_elsewhere_pvalues_from_maxima(
+        lines, maxima, en1=en1, en2=en2,
+    )
     return result, maxima

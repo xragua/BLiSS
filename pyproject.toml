@@ -47,5 +47,3 @@ Issues = "https://github.com/xragua/bliss/issues"
 where = ["."]
 include = ["bliss*"]
 
-[tool.setuptools.package-data]
-"bliss.line_identification" = ["st_reduced.dat"]

@@ -21,4 +21,4 @@ BLiSS is developed in the context of modern X-ray spectral analysis and line-ide
 - **specutils** — Astropy-affiliated package for spectroscopic analysis and reduction.
 - **LiMe** — Python library for measuring spectral lines.
 - **PyEMILI** — Computer-aided spectral line identification tool.
-- **XSTAR atomic database** — Atomic database widely used for modelling photoionized plasmas.
+- **XSTAR atomic database** — An external source of atomic data for modelling photoionized plasmas. It is not bundled with or required by BLiSS; users may independently obtain their chosen catalogue and supply its transitions as a DataFrame.

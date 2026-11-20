@@ -7,6 +7,22 @@ FIT_QUALITY_COLUMNS = ['fit_converged', 'fit_evaluable',
                        'fit_center_initial']
 # Relative machine-precision guard, not an astrophysical significance cut.
 RELATIVE_ERROR_FLOOR = np.sqrt(np.finfo(float).eps)
+MAX_CENTER_ERROR_KEV = 1.0
+
+
+def center_error_exceeds_limit(errors):
+    """Identify errors strictly above 1 keV; NaNs remain numerical diagnostics."""
+    numeric = pd.to_numeric(errors, errors='coerce')
+    values = (numeric.to_numpy(dtype=float, na_value=np.nan)
+              if isinstance(numeric, pd.Series) else np.asarray(numeric, dtype=float))
+    return values > MAX_CENTER_ERROR_KEV
+
+
+def discard_large_center_errors(lines):
+    """Remove ecenter > 1 keV, preserving row labels and other diagnostics."""
+    if 'ecenter' not in lines:
+        return lines.copy()
+    return lines.loc[~center_error_exceeds_limit(lines['ecenter'])].copy()
 
 
 def annotate_fit_quality(lines):
@@ -15,7 +31,11 @@ def annotate_fit_quality(lines):
     No intensity or area cut is used. Errors <= sqrt(machine epsilon) times
     the parameter scale are numerically suspect. Centroid errors use sigma
     as their scale so the rule does not depend on the energy origin.
-    Missing convergence metadata is unknown, not a recorded success.
+    Centroid errors > 1 keV are ineligible, including when cached quality
+    flags are stale. Amplitude and width errors have no upper cut. Missing
+    convergence metadata is unknown, not a recorded success.
+    Width errors are inapplicable only for an explicit boolean
+    width_fixed_instrumental=True; other parameter checks still apply.
     """
     result = lines.copy()
     for col in ['fit_converged', 'fit_block_id', 'fit_center_initial']:
@@ -23,6 +43,12 @@ def annotate_fit_quality(lines):
             result[col] = np.nan
     if 'fit_message' not in result:
         result['fit_message'] = ''
+    if 'width_fixed_instrumental' not in result:
+        result['width_fixed_instrumental'] = False
+    else:
+        result['width_fixed_instrumental'] = result['width_fixed_instrumental'].map(
+            lambda flag: isinstance(flag, (bool, np.bool_)) and bool(flag)).astype(bool)
+    width_fixed = result['width_fixed_instrumental'].to_numpy(dtype=bool)
     reasons = [[] for _ in range(len(result))]
     invalid = np.zeros(len(result), dtype=bool)
 
@@ -42,11 +68,13 @@ def annotate_fit_quality(lines):
     mark(~np.isfinite(amp) | ~np.isfinite(center) | ~np.isfinite(sigma),
          'nonfinite_parameters')
     mark((amp <= 0) | (sigma <= 0), 'nonpositive_parameters')
+    mark(center_error_exceeds_limit(values('ecenter')), 'ecenter_exceeds_1_keV')
     for col, scale in [('eamplitude', np.abs(amp)), ('ecenter', np.abs(sigma)),
                        ('esigma', np.abs(sigma))]:
         error = values(col)
-        mark(~np.isfinite(error) | (error <= 0), 'invalid_' + col)
-        mark(np.isfinite(error) & (error > 0) & np.isfinite(scale)
+        required = ~width_fixed if col == 'esigma' else np.ones(len(result), dtype=bool)
+        mark(required & (~np.isfinite(error) | (error <= 0)), 'invalid_' + col)
+        mark(required & np.isfinite(error) & (error > 0) & np.isfinite(scale)
              & (error <= RELATIVE_ERROR_FLOOR * scale),
              'numerically_suspect_' + col)
     result['fit_evaluable'] = ~invalid

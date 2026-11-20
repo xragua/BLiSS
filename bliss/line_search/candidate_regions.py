@@ -5,9 +5,11 @@ from numbers import Real
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
-from .fit_quality import annotate_fit_quality
+from .fit_quality import annotate_fit_quality, center_error_exceeds_limit, discard_large_center_errors
+from .poisson_fitting import PoissonFitData, fit_poisson_gaussians, poisson_model_uncertainty
 from .peak_selection import find_peaks_new
-from .gaussian_models import n_gaussian, p0_generator
+from .gaussian_models import n_gaussian, p0_generator, validate_sigma_bounds
+from .instrumental_width import fit_with_instrumental_width
 
 DEFAULT_MIN_PEAK_SEPARATION = 0.001
 """Floor of the minimum separation between retained peaks, in spectral-axis
@@ -51,6 +53,7 @@ class CandidateBlock:
     uncertainties: np.ndarray
     baseline: np.ndarray
     response_sigma: np.ndarray | None = None
+    poisson_data: PoissonFitData | None = None
 
 
 class CandidateRegionDetector:
@@ -58,7 +61,8 @@ class CandidateRegionDetector:
 
     def detect(self, x, y, sy, ylines, base, response_sigma=None,
                min_peak_separation=None, max_sigma_line=0.1,
-               min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
+               min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE, min_sigma_line=1e-6,
+               *, poisson_data=None):
         """Detect raw candidate lines from baseline-subtracted spectral excesses.
 
         Parameters
@@ -80,8 +84,10 @@ class CandidateRegionDetector:
             Floor of the minimum separation between retained peaks, in
             spectral-axis units. ``None`` uses
             ``DEFAULT_MIN_PEAK_SEPARATION``.
+        min_sigma_line : float, default: 1e-6
+            Absolute lower sigma bound; combined with the instrumental floor.
         max_sigma_line : float, default: 0.1
-            Upper sigma bound for every fitted component, in keV.
+            Configured upper sigma bound in keV, capped by the fitted block energy span.
         min_relative_prominence : float, default: 0.05
             Retain peaks strictly above this fraction of the largest
             prominence in their block. Must be finite and in [0, 1).
@@ -96,18 +102,20 @@ class CandidateRegionDetector:
             x, y, sy, ylines, base,
             response_sigma=response_sigma,
             min_peak_separation=min_peak_separation,
-            max_sigma_line=max_sigma_line,
+            max_sigma_line=max_sigma_line, min_sigma_line=min_sigma_line,
             min_relative_prominence=min_relative_prominence,
+            poisson_data=poisson_data,
         )
 
 
-def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None):
+def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None, *, poisson_data=None):
     """Split non-zero line excesses into contiguous candidate blocks.
 
-    Blocks are maximal runs of non-zero bins in ``ylines``, extended by one
-    zero-valued padding bin on each side (where available) to anchor the
-    Gaussian wings. The final run of the interval is included, and runs
-    touching either edge of the grid are padded only where possible.
+    Blocks are maximal runs of non-zero bins in ``ylines``, extended by up to
+    two observed bins on each side to anchor the Gaussian wings. Padding stops
+    before another non-zero run or the edge of the grid. Neighboring blocks
+    may share zero-excess padding bins, but never include each other's excess.
+    The final run of the interval is included.
 
     Parameters
     ----------
@@ -145,9 +153,12 @@ def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None):
 
     blocks = []
     last = len(ylines) - 1
-    for lo_nz, hi_nz in zip(run_starts, run_ends):
-        lo = max(int(lo_nz) - 1, 0)      # one zero-padding bin on the left
-        hi = min(int(hi_nz) + 1, last)   # one zero-padding bin on the right
+    for i, (lo_nz, hi_nz) in enumerate(zip(run_starts, run_ends)):
+        # Keep the added context outside neighboring candidate excesses.
+        left_limit = int(run_ends[i - 1]) + 1 if i > 0 else 0
+        right_limit = int(run_starts[i + 1]) - 1 if i + 1 < len(run_starts) else last
+        lo = max(int(lo_nz) - 2, left_limit)
+        hi = min(int(hi_nz) + 2, right_limit)
         sl = slice(lo, hi + 1)
         blocks.append(
             CandidateBlock(
@@ -156,6 +167,7 @@ def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None):
                 values=np.array(y[sl]),
                 uncertainties=np.array(sy[sl]),
                 baseline=np.array(base[sl]),
+                poisson_data=None if poisson_data is None else poisson_data.sliced(sl),
                 response_sigma=None if resp is None else np.interp(
                     np.asarray(x[sl], dtype=float),
                     np.asarray(x, dtype=float),
@@ -167,7 +179,7 @@ def _build_candidate_blocks(x, y, sy, ylines, base, response_sigma=None):
 
 
 def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma_line=0.1,
-                         min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
+                         min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE, min_sigma_line=1e-6):
     """Fit Gaussian components inside one candidate block.
 
     Peak retention follows two rules: (i) minimum separation -- among peaks
@@ -178,15 +190,26 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
     ``max(min_peak_separation, sigma_inst(E))`` when the instrumental
     ``response_sigma`` is available, and ``min_peak_separation`` otherwise.
     The number of Gaussians is capped at ``floor(n_bins / 4)``, keeping the
-    most prominent peaks. Local fits are performed on the signed
+    most prominent peaks. Local Gaussian-likelihood fits use the signed
     baseline-subtracted residual of the block, weighted by the supplied
     one-sigma observational uncertainties. Their absolute scale is retained
     in the covariance; the empirical baseline is treated as fixed. Amplitude,
-    center and sigma remain free within their bounds in a single joint fit.
-    After fitting, discard each component with ``ecenter > 0.1`` keV,
-    ``esigma > 0.5`` keV, or ``eamplitude > 10 * max(block.values)``.
-    The amplitude-error limit uses the observed block including its continuum.
-    Retained components keep their joint-fit parameters; no refit is performed.
+    center and sigma initially remain free within their bounds. Widths below
+    the instrumental sigma at the fitted center are then fixed to that value
+    and the remaining parameters are jointly refitted. Fixed-width errors
+    are NaN; amplitude/center errors are conditional on that assumed width.
+    Every amplitude is bounded above by the maximum observed bin in this block
+    plus the uncertainty of that same bin, including the continuum in the bin
+    value. The same rule is used for observed and simulated blocks.
+    With poisson_data, fit original source/background counts using Poisson
+    likelihood and the bin-integrated continuum + line model. Raw zero
+    errors are allowed and are never used as weights. Covariances are local
+    Fisher estimates; noise_on_block uses the fitted expected count variance.
+    Components with ecenter > 1 keV are discarded. There is no upper cut on
+    esigma or eamplitude. Retained components keep their final joint-fit
+    parameters and covariance.
+    return_raw_lines records numerical validity; non-evaluable fits are
+    excluded from significance comparisons, equally for data and simulations.
 
     Parameters
     ----------
@@ -198,8 +221,10 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
     min_peak_separation : float or None, default: None
         Floor of the minimum separation between retained peaks, in
         spectral-axis units. ``None`` uses ``DEFAULT_MIN_PEAK_SEPARATION``.
+    min_sigma_line : float, default: 1e-6
+        Absolute lower sigma bound; combined with the instrumental floor.
     max_sigma_line : float, default: 0.1
-        Upper sigma bound for every fitted component, in keV.
+        Configured upper sigma bound in keV, capped by the fitted block energy span.
     min_relative_prominence : float, default: 0.05
         Strict lower bound on peak prominence divided by the block maximum.
         Must be finite and in [0, 1); this is not a significance threshold.
@@ -244,33 +269,47 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
             max_peaks = int(np.floor(len(block.energy) / 4))
             good_peaks = good_peaks[0:max(1, max_peaks)]
             if len(good_peaks) > 0:
-                p0, bounds = p0_generator(block.energy, block.values,
-                                          good_peaks,
-                                          response_sigma=block.response_sigma,
-                                          max_sigma_line=max_sigma_line)
+                fit_sigma = np.asarray(block.uncertainties, dtype=float)
+                valid_sigma = (fit_sigma.shape == np.shape(block.values)
+                               and np.all(np.isfinite(fit_sigma) &
+                                              ((fit_sigma >= 0) if block.poisson_data is not None
+                                               else (fit_sigma > 0))))
+                if valid_sigma:
+                    # Keep impossible configured bounds as explicit errors;
+                    # invalid data errors still produce failed-attempt rows below.
+                    p0, bounds = p0_generator(
+                        block.energy, block.values, good_peaks,
+                        response_sigma=block.response_sigma,
+                        max_sigma_line=max_sigma_line, min_sigma_line=min_sigma_line,
+                        uncertainties=fit_sigma,
+                    )
                 try:
+                    # block.excess locates candidates; fitting must also retain
+                    # fluctuations below the baseline in observed and null data.
                     target = block.values - block.baseline
-                    fit_sigma = np.asarray(block.uncertainties, dtype=float)
-                    if (fit_sigma.shape != target.shape
-                            or not np.all(np.isfinite(fit_sigma) & (fit_sigma > 0))):
+                    if not valid_sigma or fit_sigma.shape != target.shape:
                         raise ValueError("Local fit requires finite positive uncertainties "
                                          "for every fitted bin.")
-                    popt, pcov = curve_fit(
-                        n_gaussian, block.energy, target, p0=p0, bounds=bounds,
-                        sigma=fit_sigma, absolute_sigma=True, maxfev=100000)
+                    popt, pcov, width_fixed = fit_with_instrumental_width(
+                        block.energy, target, fit_sigma, p0, bounds,
+                        response_sigma=block.response_sigma,
+                        poisson_data=block.poisson_data, baseline=block.baseline,
+                        gaussian_fit=curve_fit, poisson_fit=fit_poisson_gaussians,
+                    )
+                    if block.poisson_data is not None:
+                        noise_on_block = float(np.mean(poisson_model_uncertainty(
+                            block.energy, block.baseline, block.poisson_data, popt)))
                     errors = np.sqrt(np.diag(pcov))
                     popt_ = np.reshape(popt, (-1, 3))
                     errors_ = np.reshape(errors, (-1, 3))
-                    max_amplitude_error = 100.0 * max(block.values)
                     for k in range(len(popt_)):
                         eamplitude, ecenter, esigma = errors_[k]
-                        # Apply the same post-fit cut to observed and null lines,
-                        # before they can enter significance evaluation, refitting or output.
-                        if (ecenter > 1 or eamplitude > max_amplitude_error):
+                        if center_error_exceeds_limit(ecenter):
                             continue
                         rows.append({'fit_converged': True,
                                      'fit_message': '',
                                      'fit_block_id': block_index,
+                                     'fit_block_width': float(np.ptp(block.energy)),
                                      'fit_center_initial': p0[3*k + 1],
                                      'amplitude': popt_[k][0],
                                      'center': popt_[k][1],
@@ -278,6 +317,7 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
                                      'eamplitude': eamplitude,
                                      'ecenter': ecenter,
                                      'esigma': esigma,
+                                     'width_fixed_instrumental': bool(width_fixed[k]),
                                      'cov_amplitude_sigma': pcov[3*k, 3*k + 2],
                                      'noise_on_block': noise_on_block})
                 except (RuntimeError, ValueError) as exc:
@@ -286,13 +326,16 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
                     # center locates the attempted fit, not a measured centroid.
                     for k in range(len(good_peaks)):
                         rows.append(dict(
-                            center=p0[3*k + 1], fit_center_initial=p0[3*k + 1],
+                            center=good_peaks.energy.iloc[k],
+                            fit_center_initial=good_peaks.energy.iloc[k],
                             amplitude=np.nan, sigma=np.nan, eamplitude=np.nan,
                             ecenter=np.nan, esigma=np.nan,
+                            width_fixed_instrumental=False,
                             cov_amplitude_sigma=np.nan,
                             noise_on_block=noise_on_block,
                             fit_converged=False,
-                            fit_message=str(exc), fit_block_id=block_index))
+                            fit_message=str(exc), fit_block_id=block_index,
+                            fit_block_width=float(np.ptp(block.energy))))
     return rows
 
 
@@ -335,7 +378,8 @@ def _add_line_context(fitted, x, y, base):
 
 def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
                      min_peak_separation=None, max_sigma_line=0.1,
-                     min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE):
+                     min_relative_prominence=DEFAULT_MIN_RELATIVE_PROMINENCE, min_sigma_line=1e-6,
+                     *, poisson_data=None):
     """Detect contiguous excesses and fit preliminary Gaussian line candidates.
 
     Parameters
@@ -357,12 +401,20 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         spectral-axis units. ``None`` uses ``DEFAULT_MIN_PEAK_SEPARATION``;
         when ``response_sigma`` is provided, the effective local separation
         is ``max(min_peak_separation, sigma_inst(E))``.
+    min_sigma_line : float, default: 1e-6
+        Absolute lower sigma bound; combined with the instrumental floor.
     max_sigma_line : float, default: 0.1
-        Upper sigma bound for every fitted component, in keV.
+        Configured upper sigma bound in keV, capped by the fitted block energy span.
     min_relative_prominence : float, default: 0.05
         Retain peaks strictly above this fraction of the largest prominence
         in their block. Must be finite and in [0, 1). Use the same value for
         observed and null spectra; this is not a significance threshold.
+
+    poisson_data : PoissonFitData or None
+        Aligned raw source/background counts and exposure-width conversion.
+        When provided, use a Poisson likelihood on counts instead of weighted
+        residuals. Zero raw errors are valid. The same input type and continuum
+        estimator must be used in observed and simulated searches.
 
     Returns
     -------
@@ -370,28 +422,33 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         Raw candidate-line table with Gaussian parameters, parameter errors,
         goodness-of-fit information, local continuum context, and instrumental
         ``response_sigma`` interpolated at each fitted centroid (NaN if absent).
-        Components exceeding the local-fit error limits are already excluded.
+        Centroid errors > 1 keV are discarded. Amplitude and width errors have
+        no upper cut. Numerical
+        validity is recorded by annotate_fit_quality and checked identically
+        for observed and simulated candidates before significance evaluation.
         Quality metadata retains failed attempts: their center is the initial
         guess, their fitted amplitude/width/errors are NaN, and the failure
         message is stored. Non-evaluable attempts are not detection claims.
     """
+    validate_sigma_bounds(min_sigma_line, max_sigma_line)
     validate_min_relative_prominence(min_relative_prominence)
     blocks = _build_candidate_blocks(x, y, sy, ylines, base,
-                                     response_sigma=response_sigma)
+                                     response_sigma=response_sigma, poisson_data=poisson_data)
     rows = []
     for block_index, block in enumerate(blocks):
         rows.extend(_fit_candidate_block(
             block, block_index, min_peak_separation=min_peak_separation,
-            max_sigma_line=max_sigma_line,
+            max_sigma_line=max_sigma_line, min_sigma_line=min_sigma_line,
             min_relative_prominence=min_relative_prominence))
     fitted = pd.DataFrame(rows, columns=['amplitude', 'center', 'sigma',
                                          'eamplitude', 'ecenter', 'esigma',
+                                         'width_fixed_instrumental',
                                          'cov_amplitude_sigma',
                                          'noise_on_block',
                                          'fit_converged', 'fit_message',
-                                         'fit_block_id', 'fit_center_initial'])
+                                         'fit_block_id', 'fit_center_initial', 'fit_block_width'])
     fitted = _add_line_context(fitted, x, y, base)
     fitted['response_sigma'] = np.nan
     if response_sigma is not None and len(fitted):
         fitted['response_sigma'] = np.interp(fitted['center'], x, response_sigma)
-    return annotate_fit_quality(fitted).reset_index(drop=True)
+    return annotate_fit_quality(discard_large_center_errors(fitted)).reset_index(drop=True)

@@ -2,10 +2,10 @@
 
 **BLiSS** is an open-source Python package for finding emission lines in spectra without telling the code where to look first. In other words: a **real blind line-search algorithm** — you only need your spectrum.
 
-**BLiSS** was designed to simplify and speed up spectral analysis in X-ray astronomy. Instead of manually inspecting spectra, guessing candidate energies, and testing lines one by one, **BLiSS** performs an automatic search for statistically significant emission features and then cross-matches them with atomic transitions.
+**BLiSS** was designed to simplify and speed up spectral analysis in X-ray astronomy. Instead of manually inspecting spectra, guessing candidate energies, and testing lines one by one, **BLiSS** performs an automatic search for statistically significant emission features and can optionally cross-match them with a user-supplied table of atomic transitions.
 
 
-The package combines Gaussian line-profile fitting, Monte Carlo significance estimation, and database-based identification using XSTAR atomic data. It is especially useful when the continuum is complex, uncertain, or simply not the main focus of the analysis.
+The package combines Gaussian line-profile fitting, Monte Carlo significance estimation, and optional identification using a transition catalogue selected and supplied by the user. No atomic database is shipped with BLiSS. It is especially useful when the continuum is complex, uncertain, or simply not the main focus of the analysis.
 
 
 Although **BLiSS** was developed for X-ray spectra, the core idea is more general: if you have spectral data with uncertainties, BLiSS can help you search for emission features in a systematic and reproducible way.
@@ -27,8 +27,9 @@ Although **BLiSS** was developed for X-ray spectra, the core idea is more genera
   - Line searches can be performed without defining a global continuum model beforehand.
 
 - **Atomic line identification**
-  - Cross-matches detected features with XSTAR atomic transitions.
-  - Supports Doppler velocity constraints.
+  - Cross-matches detected features with a transition table supplied as a pandas DataFrame.
+  - Supports Doppler velocity constraints and explicit label, energy/wavelength, and unit settings.
+  - Ranks matches by energy proximity unless an optional `weight_col` is specified; no database or scoring scheme is selected automatically.
 
 - **Flexible rebinning**
   - Rebin spectra by instrumental resolution or target signal-to-noise ratio.
@@ -70,6 +71,12 @@ import bliss
 
 # Inspect the detected candidates
 ```
+
+For optional identification, obtain a transition catalogue independently and
+read it with a suitable reader such as `pd.read_csv`. Pass the DataFrame as
+`LineIdentifier(atomic_table=catalog, ...)` or `pd_data=catalog` in the functional
+API. See [Atomic-line identification](functions.md#atomic-line-identification)
+for the required columns and units.
 
 Example notebooks are available in the `notebooks/` directory:
 
