@@ -126,6 +126,8 @@ class BlindLineSearchConfig:
     max_sigma_line : float
         Maximum Gaussian sigma allowed for an individual line candidate,
         in keV. Applied to local data/null fits and the optional global fit.
+        The block-capped maximum is raised to three times instrumental sigma
+        if it is below that sigma; the absolute lower bound is unchanged.
 
     min_relative_prominence : float
         Peaks must exceed this fraction of the largest prominence in their
@@ -810,7 +812,9 @@ def final_fit_and_metrics(
     The lower width bound is max(min_sigma_line, 0.1 * instrumental_sigma),
     using min_sigma_line alone when no valid instrumental width is available.
     Every width is bounded above by the smaller of ``max_sigma_line`` (default
-    0.1 keV) and its saved local ``fit_block_width``, when available.
+    0.1 keV) and its saved local ``fit_block_width``, when available. A cap
+    below instrumental sigma is raised to three times that sigma before
+    fitting, including when the fitted center requires a larger cap.
     Components with ecenter > 1 keV are discarded before and after refitting.
     The returned line model includes only retained components, preserving
     their joint-fit parameters and covariance without another refit.

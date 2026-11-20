@@ -88,6 +88,7 @@ class CandidateRegionDetector:
             Absolute lower sigma bound; combined with the instrumental floor.
         max_sigma_line : float, default: 0.1
             Configured upper sigma bound in keV, capped by the fitted block energy span.
+            A cap below instrumental sigma is raised to three times that sigma.
         min_relative_prominence : float, default: 0.05
             Retain peaks strictly above this fraction of the largest
             prominence in their block. Must be finite and in [0, 1).
@@ -225,6 +226,7 @@ def _fit_candidate_block(block, block_index, min_peak_separation=None, max_sigma
         Absolute lower sigma bound; combined with the instrumental floor.
     max_sigma_line : float, default: 0.1
         Configured upper sigma bound in keV, capped by the fitted block energy span.
+        A cap below instrumental sigma is raised to three times that sigma.
     min_relative_prominence : float, default: 0.05
         Strict lower bound on peak prominence divided by the block maximum.
         Must be finite and in [0, 1); this is not a significance threshold.
@@ -405,6 +407,7 @@ def return_raw_lines(x, y, sy, ylines, base, response_sigma=None,
         Absolute lower sigma bound; combined with the instrumental floor.
     max_sigma_line : float, default: 0.1
         Configured upper sigma bound in keV, capped by the fitted block energy span.
+        A cap below instrumental sigma is raised to three times that sigma.
     min_relative_prominence : float, default: 0.05
         Retain peaks strictly above this fraction of the largest prominence
         in their block. Must be finite and in [0, 1). Use the same value for

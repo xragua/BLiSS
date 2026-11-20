@@ -4,6 +4,13 @@ import numpy as np
 
 MIN_INSTRUMENTAL_SIGMA_FRACTION = 0.1
 
+def _instrumental_sigma_upper_bound(upper, instrumental):
+    """Relax only sub-instrumental caps to three times the valid resolution."""
+    instrumental = np.asarray(instrumental, dtype=float)
+    valid = np.isfinite(instrumental) & (instrumental > 0)
+    return np.where(valid & (upper < instrumental), 3.0 * instrumental, upper)
+
+
 def validate_sigma_bounds(min_sigma_line, max_sigma_line):
     """Reject invalid configured bounds before starting any fit or simulation."""
     for name, value in (("min_sigma_line", min_sigma_line), ("max_sigma_line", max_sigma_line)):
@@ -151,7 +158,8 @@ def p0_generator(x, y, good_peaks_dataframe, response_sigma=None,
         Positive absolute lower sigma bound in keV.
     max_sigma_line : float, default: 0.1
         Configured upper sigma bound in keV; local fits also cap it at max(x)-min(x).
-        Must be finite, positive and greater than the instrumental lower bound.
+        If the effective cap is below the valid instrumental sigma, it becomes
+        three times that sigma. Configured bounds must be finite and positive.
     uncertainties : array-like or None, default: None
         Errors on y. All component amplitudes are bounded by the maximum
         observed bin plus the error of that same bin (first maximum if tied).
@@ -180,6 +188,7 @@ def p0_generator(x, y, good_peaks_dataframe, response_sigma=None,
             sigma_guess = response_sigma[position]
         else:
             sigma_guess = np.nan
+        sigma_upper = float(_instrumental_sigma_upper_bound(max_sigma_line, sigma_guess))
         # Freeze the numerical width floor at the initial candidate energy.
         sigma_floor = (MIN_INSTRUMENTAL_SIGMA_FRACTION * sigma_guess
                        if np.isfinite(sigma_guess) and sigma_guess > 0 else 0.0)
@@ -189,15 +198,15 @@ def p0_generator(x, y, good_peaks_dataframe, response_sigma=None,
                 sigma_guess = good_peaks_dataframe.twidth.loc[i]
             else:
                 sigma_guess = 0.001
-        if max_sigma_line <= sigma_floor:
+        if sigma_upper <= sigma_floor:
             raise ValueError('max_sigma_line must exceed the effective sigma lower bound.')
-        p0.append(float(np.clip(sigma_guess, sigma_floor, max_sigma_line)))
+        p0.append(float(np.clip(sigma_guess, sigma_floor, sigma_upper)))
         bound_low.append(0.0)
         bound_low.append(good_peaks_dataframe.energy.loc[i] * 0.99)
         bound_low.append(sigma_floor)
         bound_high.append(amplitude_max)
         bound_high.append(good_peaks_dataframe.energy.loc[i] * 1.01)
-        bound_high.append(max_sigma_line)
+        bound_high.append(sigma_upper)
     return (p0, (bound_low, bound_high))
 
 def p0_generator_final(x, y, clean_lines, response_sigma=None,
@@ -225,7 +234,8 @@ def p0_generator_final(x, y, clean_lines, response_sigma=None,
     max_sigma_line : float, default: 0.1
         Configured upper sigma bound in keV, capped by each saved fit_block_width.
         Legacy tables without that width retain the configured cap.
-        Must be finite, positive and greater than the instrumental lower bound.
+        If the effective cap is below the valid instrumental sigma, it becomes
+        three times that sigma. Configured bounds must be finite and positive.
     uncertainties : array-like or None, default: None
         Errors on y. All component amplitudes are bounded by the maximum
         observed bin plus the error of that same bin (first maximum if tied).
@@ -257,6 +267,7 @@ def p0_generator_final(x, y, clean_lines, response_sigma=None,
             sigma_guess = np.interp(clean_lines.center.loc[i], np.asarray(x, dtype=float), response_sigma_array)
         else:
             sigma_guess = np.nan
+        sigma_upper = float(_instrumental_sigma_upper_bound(sigma_upper, sigma_guess))
         # Freeze the numerical width floor at the initial candidate energy.
         sigma_floor = (MIN_INSTRUMENTAL_SIGMA_FRACTION * sigma_guess
                        if np.isfinite(sigma_guess) and sigma_guess > 0 else 0.0)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import curve_fit
 
-from .gaussian_models import n_gaussian
+from .gaussian_models import n_gaussian, _instrumental_sigma_upper_bound
 from .poisson_fitting import fit_poisson_gaussians
 
 
@@ -25,20 +25,25 @@ def fit_with_instrumental_width(
     component indicating a fixed instrumental width. Fixed-width covariance
     rows/columns are NaN: uncertainties on remaining parameters are conditional
     on the adopted width. No resolution estimate leaves the ordinary free fit
-    unchanged. Incompatible instrumental widths raise ValueError instead of
-    silently overriding the configured width bounds.
+    unchanged. An upper width bound below the valid instrumental sigma is
+    raised to three times that sigma before the free fit. If a fitted center
+    requires a larger cap, the free fit is repeated with that relaxed cap
+    before deciding which widths to fix. Lower bounds are unchanged.
     """
     energy = np.asarray(energy, dtype=float)
     parameters = np.asarray(p0, dtype=float).copy()
     if parameters.ndim != 1 or parameters.size == 0 or parameters.size % 3:
         raise ValueError('Gaussian fits require nonempty amplitude/center/sigma triples.')
     lower = np.broadcast_to(np.asarray(bounds[0], dtype=float), parameters.shape)
-    upper = np.broadcast_to(np.asarray(bounds[1], dtype=float), parameters.shape)
+    upper = np.broadcast_to(np.asarray(bounds[1], dtype=float), parameters.shape).copy()
     response = None if response_sigma is None else np.asarray(response_sigma, dtype=float)
     if response is not None and response.shape != energy.shape:
         raise ValueError('Instrumental sigmas must match the fitting energy grid.')
     width_fixed = np.zeros(parameters.size // 3, dtype=bool)
     fixed = np.full(parameters.shape, np.nan)
+    if response is not None:
+        upper[2::3] = _instrumental_sigma_upper_bound(
+            upper[2::3], np.interp(parameters[1::3], energy, response))
 
     def fit(current):
         free = np.isnan(fixed)
@@ -76,6 +81,11 @@ def fit_with_instrumental_width(
         if response is None:
             return parameters, covariance, width_fixed
         instrumental = np.interp(parameters[1::3], energy, response)
+        relaxed = _instrumental_sigma_upper_bound(upper[2::3], instrumental)
+        expand = ~width_fixed & (relaxed > upper[2::3])
+        if np.any(expand):
+            upper[3 * np.flatnonzero(expand) + 2] = relaxed[expand]
+            continue
         newly_fixed = (~width_fixed & np.isfinite(instrumental) & (instrumental > 0)
                        & (parameters[2::3] < instrumental))
         if not np.any(newly_fixed):

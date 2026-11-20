@@ -25,8 +25,8 @@ Originally developed for X-ray spectroscopy, BLiSS is designed around a general 
   - Line searches can be performed without defining a global continuum model beforehand.
 
 - **Atomic line identification**
-  - Cross-matches detected features with XSTAR atomic transitions.
-  - Supports Doppler velocity constraints.
+  - Cross-matches detected features with a transition table supplied by the user.
+  - Supports Doppler velocity constraints; no atomic database is shipped or loaded automatically.
 
 - **Flexible rebinning**
   - Rebin spectra by instrumental resolution or target signal-to-noise ratio.
@@ -68,6 +68,30 @@ import bliss
 
 # Inspect the detected candidates
 ```
+
+For optional atomic identification, obtain your chosen catalogue independently,
+read it into a DataFrame, and supply its label and coordinate columns:
+
+```python
+import pandas as pd
+from bliss import LineIdentifier
+
+catalog = pd.read_csv("my_transitions.csv")
+identifier = LineIdentifier(
+    atomic_table=catalog,
+    ion_col="ion",
+    energy_col="energy_keV",
+    energy_unit="keV",
+    v_doppler_kms=1000,
+)
+# Once a candidate table is available:
+# identified = identifier.add_most_probable(candidate_lines)
+```
+
+Adjust the column names and units to your file. Without an explicit
+`weight_col`, matches are ranked by energy proximity. BLiSS supplies no default
+catalogue or database loader; old `st_reduced` imports must be replaced with
+your own DataFrame.
 
 Example notebooks are available in the `notebooks/` directory:
 
